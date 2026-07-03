@@ -32,7 +32,15 @@ class CATQConfig:
     epochs: int = 60
     lr: float = 1e-3
 
-    # Sliding-layer window (SliderQuant default is unknown from the paper)
+    # SliderQuant framework (docs/papers/slider-quant-paper.md, Table A)
+    lora_rank: int = 4
+    lora_lr: float = 1e-4
+    cs_enabled: bool = True
+    # "sliderquant": PESW (Ls shallow) + FSSW {s=window_size, i=1} + PCSW (Ld deep)
+    # "fixed": FSSW only, as in our first reproduction attempt
+    schedule: str = "sliderquant"
+    shallow_layers: int = 4
+    deep_layers: int = 4
     window_size: int = 2
 
     # Module name suffixes inside decoder layers to quantize.

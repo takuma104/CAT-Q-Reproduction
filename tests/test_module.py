@@ -6,10 +6,10 @@ from torch import nn
 from catq.module import CATQLinear
 
 
-def make_module(bias: bool = True, group_size: int = 32) -> tuple[nn.Linear, CATQLinear]:
+def make_module(bias: bool = True, group_size: int = 32, **kwargs: object) -> tuple[nn.Linear, CATQLinear]:
     torch.manual_seed(0)
     linear = nn.Linear(48, 16, bias=bias)
-    return linear, CATQLinear(linear, group_size=group_size)
+    return linear, CATQLinear(linear, group_size=group_size, **kwargs)
 
 
 def test_t0_matches_fp_linear() -> None:
@@ -17,6 +17,31 @@ def test_t0_matches_fp_linear() -> None:
     x = torch.randn(4, 48)
     module.t = 0.0
     assert torch.allclose(module(x), linear(x), atol=1e-6)
+
+
+def test_fp_mode_bypasses_compensation() -> None:
+    linear, module = make_module()
+    x = torch.randn(4, 48)
+    # Perturb CS and LoRA as if warm-started; fp_mode must still return the
+    # pristine FP output (used for window targets).
+    with torch.no_grad():
+        module.cs_scale.mul_(1.7)
+        module.lora_B.normal_(std=0.1)
+    module.t = 0.5
+    module.fp_mode = True
+    assert torch.allclose(module(x), linear(x), atol=1e-6)
+    module.fp_mode = False
+    assert not torch.allclose(module(x), linear(x), atol=1e-3)
+
+
+def test_cs_cancels_at_identity_time() -> None:
+    # At t=0 with zero LoRA, x/cs against W*cs is exactly the FP linear.
+    linear, module = make_module()
+    with torch.no_grad():
+        module.cs_scale.uniform_(0.5, 2.0)
+    module.t = 0.0
+    x = torch.randn(4, 48)
+    assert torch.allclose(module(x), linear(x), atol=1e-5)
 
 
 def test_hard_stage_weight_is_ternary_per_group() -> None:
@@ -41,11 +66,15 @@ def test_gradients_flow_in_both_stages() -> None:
         module.zero_grad(set_to_none=True)
         module.t = t
         module(x).pow(2).sum().backward()
-        for name in ("rho_mu", "rho_alpha", "rho_delta"):
+        for name in ("rho_mu", "rho_alpha", "rho_delta", "cs_scale", "lora_B"):
             grad = getattr(module, name).grad
             assert grad is not None, f"{name} has no grad at t={t}"
             assert torch.isfinite(grad).all()
             assert grad.abs().sum() > 0, f"{name} grad is zero at t={t}"
+        # lora_A's grad is B^T @ dL/dW_tilde, which is zero while B is at its
+        # zero init; it becomes nonzero once B moves. Only check finiteness.
+        assert module.lora_A.grad is not None
+        assert torch.isfinite(module.lora_A.grad).all()
 
 
 def test_finalize_matches_hard_stage() -> None:

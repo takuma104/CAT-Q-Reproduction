@@ -31,6 +31,10 @@ def main() -> None:
     parser.add_argument("--gamma", type=float, default=defaults.gamma)
     parser.add_argument("--s0", type=float, default=defaults.s0)
     parser.add_argument("--seed", type=int, default=defaults.seed)
+    parser.add_argument("--schedule", choices=["sliderquant", "fixed"], default=defaults.schedule)
+    parser.add_argument("--lora-rank", type=int, default=defaults.lora_rank)
+    parser.add_argument("--lora-lr", type=float, default=defaults.lora_lr)
+    parser.add_argument("--no-cs", action="store_true", help="disable channel-wise scaling")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -49,6 +53,10 @@ def main() -> None:
         gamma=args.gamma,
         s0=args.s0,
         seed=args.seed,
+        schedule=args.schedule,
+        lora_rank=args.lora_rank,
+        lora_lr=args.lora_lr,
+        cs_enabled=not args.no_cs,
     )
     output_dir = quantize_model(config)
     print(f"Saved quantized model to {output_dir}")

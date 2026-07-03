@@ -26,6 +26,33 @@ def build_tiny_model() -> Qwen3ForCausalLM:
     return model
 
 
+def test_build_schedule_sliderquant() -> None:
+    from catq.slider import build_schedule
+
+    config = CATQConfig()
+    schedule = build_schedule(28, config)
+    # PESW 4 + FSSW 21 + PCSW 4
+    assert len(schedule) == 29
+    assert schedule[0] == ([0], [])
+    assert schedule[3] == ([0, 1, 2, 3], [0, 1, 2])  # anchor expansion done
+    assert schedule[4] == ([3, 4], [3])  # one overlapped layer with shallow
+    assert schedule[24] == ([23, 24], [23])  # one overlapped layer with deep
+    assert schedule[25] == ([24, 25, 26, 27], [24])  # PCSW start
+    assert schedule[28] == ([27], [27])
+    finalized = [i for _, fin in schedule for i in fin]
+    assert sorted(finalized) == list(range(28))
+    # Finalization is contiguous so the hidden cache frontier always advances.
+    assert finalized == sorted(finalized)
+
+
+def test_build_schedule_fixed_fallback() -> None:
+    from catq.slider import build_schedule
+
+    config = CATQConfig()
+    schedule = build_schedule(3, config)  # too few layers for PESW/PCSW
+    assert schedule == [([0, 1], [0]), ([1, 2], [1]), ([2], [2])]
+
+
 def test_sliding_window_end_to_end() -> None:
     model = build_tiny_model()
     config = CATQConfig(
@@ -35,6 +62,7 @@ def test_sliding_window_end_to_end() -> None:
         epochs=8,
         batch_size=3,
         window_size=2,
+        cs_enabled=False,  # keep baked weights purely group-ternary for checks
         device="cpu",
     )
     input_ids = torch.randint(0, 128, (config.num_calib_samples, config.seq_len))
