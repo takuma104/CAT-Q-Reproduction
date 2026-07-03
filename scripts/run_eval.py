@@ -36,8 +36,7 @@ def evaluate(model_path: str, batch_size: int) -> dict[str, dict[str, float]]:
         task_result: dict[str, Any] = results["results"][task]
         scores[task] = {
             "acc": task_result["acc,none"] * 100,
-            "acc_norm": task_result.get("acc_norm,none", float("nan"))
-            and task_result.get("acc_norm,none", float("nan")) * 100,
+            "acc_norm": task_result.get("acc_norm,none", float("nan")) * 100,
         }
     return scores
 
