@@ -11,9 +11,11 @@ Window schedule follows SliderQuant (docs/papers/slider-quant-paper.md, §3.2):
 Remaining interpretation notes (not fully specified across the two papers):
   - The target is F(W, X) with pristine FP weights on the same X coming from
     already-quantized upstream layers (Eq. 7 uses a single X for both terms).
-  - The 60 calibration epochs run per window position, each traversing the
-    full ST schedule t in (0, 1]; trailing/anchor layers keep their learned
-    parameters as warm start across windows.
+  - The 60 calibration epochs run per window position. A layer's ST time
+    state t advances over its whole participation lifetime (all windows that
+    contain it), reaching t=1 exactly when it is finalized. Re-annealing a
+    warm-started layer from t=0 each window destroys its hard-stage solution
+    (verified empirically: held-out perplexity exploded), so t never resets.
   - SliderQuant's intra-layer sliding (gamma=0.5, N=2) is not implemented; its
     coupling with ST's annealing schedule is unclear from the papers.
 """
@@ -232,6 +234,14 @@ class SlidingWindowQuantizer:
         num_samples = hidden.shape[0]
         logs: list[WindowLog] = []
 
+        # Per-layer lifetime epoch budget: t advances across all windows that
+        # contain the layer and hits 1.0 in its last window (see module note).
+        total_epochs = {
+            idx: cfg.epochs * sum(idx in layers for layers, _ in schedule)
+            for idx in range(n_layers)
+        }
+        done_epochs = {idx: 0 for idx in range(n_layers)}
+
         for w, (layer_indices, finalize_indices) in enumerate(schedule):
             for idx in layer_indices:
                 self._wrap_layer(idx)
@@ -251,7 +261,10 @@ class SlidingWindowQuantizer:
             generator = torch.Generator().manual_seed(cfg.seed + w)
             initial_loss = final_loss = float("nan")
             for epoch in range(1, cfg.epochs + 1):
-                self._set_time(layer_indices, epoch / cfg.epochs)
+                for idx in layer_indices:
+                    t = (done_epochs[idx] + epoch) / total_epochs[idx]
+                    for module in self.wrapped[idx].values():
+                        module.t = t
                 perm = torch.randperm(num_samples, generator=generator)
                 epoch_loss = 0.0
                 for i in range(0, num_samples, cfg.batch_size):
@@ -272,6 +285,9 @@ class SlidingWindowQuantizer:
                         "window %d/%d layers=%s epoch %d/%d loss=%.6f",
                         w + 1, len(schedule), layer_indices, epoch, cfg.epochs, epoch_loss,
                     )
+
+            for idx in layer_indices:
+                done_epochs[idx] += cfg.epochs
 
             layer_stats: dict[str, dict[str, float]] = {}
             for idx in finalize_indices:
