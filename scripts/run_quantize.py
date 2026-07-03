@@ -35,6 +35,7 @@ def main() -> None:
     parser.add_argument("--lora-rank", type=int, default=defaults.lora_rank)
     parser.add_argument("--lora-lr", type=float, default=defaults.lora_lr)
     parser.add_argument("--no-cs", action="store_true", help="disable channel-wise scaling")
+    parser.add_argument("--loss", choices=["mse", "token_rms"], default=defaults.loss)
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -57,6 +58,7 @@ def main() -> None:
         lora_rank=args.lora_rank,
         lora_lr=args.lora_lr,
         cs_enabled=not args.no_cs,
+        loss=args.loss,
     )
     output_dir = quantize_model(config)
     print(f"Saved quantized model to {output_dir}")

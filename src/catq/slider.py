@@ -70,6 +70,14 @@ def build_schedule(n_layers: int, config: CATQConfig) -> list[tuple[list[int], l
     return schedule
 
 
+def window_loss_fn(out: torch.Tensor, target: torch.Tensor, kind: str) -> torch.Tensor:
+    out, target = out.float(), target.float()
+    if kind == "token_rms":
+        norm = target.pow(2).mean(dim=-1, keepdim=True).sqrt().clamp_min(1e-6)
+        return torch.nn.functional.mse_loss(out / norm, target / norm)
+    return torch.nn.functional.mse_loss(out, target)
+
+
 def _target_linears(layer: nn.Module, suffixes: tuple[str, ...]) -> dict[str, nn.Linear]:
     found: dict[str, nn.Linear] = {}
     for name, module in layer.named_modules():
@@ -219,8 +227,8 @@ class SlidingWindowQuantizer:
         for i in range(0, hidden.shape[0], self.config.batch_size):
             batch = hidden[i : i + self.config.batch_size]
             out = self._forward_window(layer_indices, batch, position_embeddings)
-            total += torch.nn.functional.mse_loss(
-                out.float(), target[i : i + batch.shape[0]].float()
+            total += window_loss_fn(
+                out, target[i : i + batch.shape[0]], self.config.loss
             ).item() * batch.shape[0]
         return total / hidden.shape[0]
 
@@ -270,7 +278,7 @@ class SlidingWindowQuantizer:
                 for i in range(0, num_samples, cfg.batch_size):
                     idx = perm[i : i + cfg.batch_size]
                     out = self._forward_window(layer_indices, hidden[idx], position_embeddings)
-                    loss = torch.nn.functional.mse_loss(out.float(), target[idx].float())
+                    loss = window_loss_fn(out, target[idx], cfg.loss)
                     optimizer.zero_grad(set_to_none=True)
                     loss.backward()
                     optimizer.step()

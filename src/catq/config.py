@@ -31,6 +31,11 @@ class CATQConfig:
     batch_size: int = 3
     epochs: int = 60
     lr: float = 1e-3
+    # "mse": plain L2 on window outputs (Eq. 7). "token_rms": L2 after
+    # per-token RMS normalization — measures the error in the geometry the
+    # following RMSNorm actually sees, preventing MSE-optimal magnitude
+    # shrinkage of massive-activation channels from being amplified post-norm.
+    loss: str = "mse"
 
     # SliderQuant framework (docs/papers/slider-quant-paper.md, Table A)
     lora_rank: int = 4
