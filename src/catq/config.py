@@ -40,7 +40,9 @@ class CATQConfig:
     # SliderQuant framework (docs/papers/slider-quant-paper.md, Table A)
     lora_rank: int = 4
     lora_lr: float = 1e-4
-    cs_enabled: bool = True
+    # Channel scaling collapses ternary models in our ablation (C4-val PPL
+    # 437k with CS vs 275 without, Qwen3-0.6B); off by default.
+    cs_enabled: bool = False
     # "sliderquant": PESW (Ls shallow) + FSSW {s=window_size, i=1} + PCSW (Ld deep)
     # "fixed": FSSW only, as in our first reproduction attempt
     schedule: str = "sliderquant"
