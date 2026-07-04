@@ -1,0 +1,6 @@
+[submodule "docs/reference_impl/OmniQuant"]
+	path = docs/reference_impl/OmniQuant
+	url = https://github.com/OpenGVLab/OmniQuant
+[submodule "docs/reference_impl/SliderQuant"]
+	path = docs/reference_impl/SliderQuant
+	url = https://github.com/deep-optimization/SliderQuant
