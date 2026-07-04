@@ -37,18 +37,26 @@ class CATQConfig:
     # shrinkage of massive-activation channels from being amplified post-norm.
     loss: str = "mse"
 
-    # SliderQuant framework (docs/papers/slider-quant-paper.md, Table A)
+    # SliderQuant framework. Defaults follow the reference implementation's
+    # W2A16 config (docs/reference_impl/SliderQuant/configs/llama2-7b-w2a16),
+    # the closest setting to ternary weight-only quantization.
     lora_rank: int = 4
-    lora_lr: float = 1e-4
-    # Channel scaling collapses ternary models in our ablation (C4-val PPL
-    # 437k with CS vs 275 without, Qwen3-0.6B); off by default.
+    lora_lr: float = 5e-4
+    # The W2A16 reference uses quant_mode=lora_only with scale_lr=0, i.e. no
+    # channel scaling for weight-only quantization — matching our ablation
+    # (C4-val PPL 437k with CS vs 275 without on Qwen3-0.6B).
     cs_enabled: bool = False
-    # "sliderquant": PESW (Ls shallow) + FSSW {s=window_size, i=1} + PCSW (Ld deep)
-    # "fixed": FSSW only, as in our first reproduction attempt
-    schedule: str = "sliderquant"
-    shallow_layers: int = 4
-    deep_layers: int = 4
-    window_size: int = 2
+    # Reference LR groups are scaled by the batch size (lr_factor).
+    scale_lr_by_batch: bool = True
+    # Window schedule: PESW over `fill_window_size` shallow layers, fixed
+    # {num_layer, stride} windows in the middle, PCSW over the deep layers.
+    window_size: int = 4  # num_layer in the reference
+    stride: int = 2  # sliding_layer in the reference
+    fill_window_size: int = 4
+    # Intra-layer sliding: the whole window schedule runs once per quant rate
+    # (progressively ternarizing the first fraction of input channels), with
+    # epochs split evenly across passes.
+    quant_rates: tuple[float, ...] = (0.5, 1.0)
 
     # Module name suffixes inside decoder layers to quantize.
     # Embeddings, lm_head and norms stay in high precision (BitNet convention).

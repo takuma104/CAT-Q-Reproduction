@@ -1,26 +1,34 @@
-"""Sliding-layer ternarization optimization (CAT-Q Section 2.4 + SliderQuant).
+"""Sliding-layer ternarization: CAT-Q quantizer on the SliderQuant framework.
 
-Window schedule follows SliderQuant (docs/papers/slider-quant-paper.md, §3.2):
-  - PESW over the Ls shallow layers: windows [0], [0,1], ..., [0..Ls-1] with
-    layer 0 as anchor; layers 0..Ls-2 are finalized after the last expansion.
-  - FSSW {s=window_size, i=1} over intermediate layers, one overlapped layer
-    at each boundary; the window head is finalized each step.
-  - PCSW over the Ld deep layers: windows [n-Ld..n-1], ..., [n-1] with the
-    last layer as anchor; the first window layer is finalized each step.
+Mechanics follow the SliderQuant reference implementation
+(docs/reference_impl/SliderQuant, W2A16 config) with CAT-Q's LM+ST quantizer
+replacing the uniform LWC quantizer:
 
-Remaining interpretation notes (not fully specified across the two papers):
-  - The target is F(W, X) with pristine FP weights on the same X coming from
-    already-quantized upstream layers (Eq. 7 uses a single X for both terms).
-  - The 60 calibration epochs run per window position. A layer's ST time
-    state t advances over its whole participation lifetime (all windows that
-    contain it), reaching t=1 exactly when it is finalized. Re-annealing a
-    warm-started layer from t=0 each window destroys its hard-stage solution
-    (verified empirically: held-out perplexity exploded), so t never resets.
-  - SliderQuant's intra-layer sliding (gamma=0.5, N=2) is not implemented; its
-    coupling with ST's annealing schedule is unclear from the papers.
+  - Window schedule: progressive expansion over the first `fill_window_size`
+    layers ([0], [0,1], ...), fixed {window_size, stride} windows over the
+    middle, progressive contraction over the last `fill_window_size` layers.
+  - Dual streams: a full-precision stream and a quantized stream are advanced
+    separately. Each window's target is the FP teacher output on the FP
+    stream, while the student consumes the quantized stream — so every window
+    actively corrects accumulated quantization error (reference
+    `use_base_loss="last"`).
+  - Intra-layer sliding: the whole schedule runs once per quant rate in
+    `quant_rates` (partial ternarization of the first fraction of input
+    channels), with `epochs` split evenly across the passes. Streams reset to
+    the embeddings at the start of each pass.
+  - Layers are never finalized mid-run; every CATQLinear stays live (warm
+    parameters) and all layers are hard-ternarized and baked at the end.
+  - No channel scaling for weight-only quantization (reference uses
+    quant_mode=lora_only with scale_lr=0 for W2A16), and LR groups are scaled
+    by the batch size (reference `lr_factor`).
+
+CAT-Q specifics kept from the paper: LM factors + ST transition per group,
+ST time state t advancing over each layer's whole participation lifetime
+(all windows in all passes), reaching t=1 in its final window.
 """
 
 import logging
+import math
 from dataclasses import dataclass, field
 
 import torch
@@ -34,40 +42,19 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class WindowLog:
+    pass_index: int
+    quant_rate: float
     window_start: int
     layers: list[int]
-    finalized: list[int]
-    # Hard-ternarization loss before this window's optimization; for the very
-    # first window this equals an absmean-style static baseline.
     hard_init_loss: float
     initial_loss: float
     final_loss: float
+
+
+@dataclass
+class RunResult:
+    windows: list[WindowLog]
     layer_stats: dict[str, dict[str, float]] = field(default_factory=dict)
-
-
-def build_schedule(n_layers: int, config: CATQConfig) -> list[tuple[list[int], list[int]]]:
-    """Returns [(window_layer_indices, finalize_indices), ...]."""
-    s = config.window_size
-    if config.schedule == "fixed" or n_layers < config.shallow_layers + config.deep_layers + 2:
-        return [
-            (list(range(i, min(i + s, n_layers))), [i]) for i in range(n_layers)
-        ]
-
-    ls, ld = config.shallow_layers, config.deep_layers
-    schedule: list[tuple[list[int], list[int]]] = []
-    # PESW: expand from [0] to [0..ls-1]; finalize 0..ls-2 after the last step,
-    # leaving layer ls-1 as the overlapped layer with the intermediate phase.
-    for k in range(1, ls + 1):
-        finalize = list(range(ls - 1)) if k == ls else []
-        schedule.append((list(range(k)), finalize))
-    # FSSW: [i, i+s-1] for i in [ls-1, n-ld-1]; the last window overlaps the
-    # deep phase by one layer (n-ld).
-    for i in range(ls - 1, n_layers - ld):
-        schedule.append((list(range(i, min(i + s, n_layers))), [i]))
-    # PCSW: contract from [n-ld..n-1] to [n-1], finalizing the head each step.
-    for i in range(n_layers - ld, n_layers):
-        schedule.append((list(range(i, n_layers)), [i]))
-    return schedule
 
 
 def window_loss_fn(out: torch.Tensor, target: torch.Tensor, kind: str) -> torch.Tensor:
@@ -76,6 +63,32 @@ def window_loss_fn(out: torch.Tensor, target: torch.Tensor, kind: str) -> torch.
         norm = target.pow(2).mean(dim=-1, keepdim=True).sqrt().clamp_min(1e-6)
         return torch.nn.functional.mse_loss(out / norm, target / norm)
     return torch.nn.functional.mse_loss(out, target)
+
+
+def build_schedule(n_layers: int, config: CATQConfig) -> list[list[int]]:
+    """Window layer lists, per the reference `fill_window_size` scheduler."""
+    s, i, fill = config.window_size, config.stride, config.fill_window_size
+    if n_layers < 2 * fill + s:
+        windows = []
+        start = 0
+        while True:
+            windows.append(list(range(start, min(start + s, n_layers))))
+            if start + s >= n_layers:
+                break
+            start += i
+        return windows
+
+    start_windows = [list(range(k + 1)) for k in range(fill)]
+    end_windows = [list(range(n_layers - fill + k, n_layers)) for k in range(fill)]
+    start_len = fill - i
+    end_len = fill - i
+    mid_len = n_layers - start_len - end_len
+    mid_round = math.ceil((mid_len - s) / i) + 1
+    mid_windows = [
+        list(range(r * i + start_len, min(r * i + s + start_len, n_layers)))
+        for r in range(mid_round)
+    ]
+    return start_windows + mid_windows + end_windows
 
 
 def _target_linears(layer: nn.Module, suffixes: tuple[str, ...]) -> dict[str, nn.Linear]:
@@ -147,26 +160,18 @@ class SlidingWindowQuantizer:
             wrapped[name] = module
         self.wrapped[idx] = wrapped
 
-    def _finalize_layer(self, idx: int) -> dict[str, dict[str, float]]:
-        stats: dict[str, dict[str, float]] = {}
-        for name, module in self.wrapped.pop(idx).items():
-            linear, module_stats = module.finalize()
-            _set_submodule(self.layers[idx], name, linear)
-            stats[f"layer{idx}.{name}"] = module_stats
-        return stats
-
-    def _set_time(self, layer_indices: list[int], t: float) -> None:
-        for idx in layer_indices:
-            for module in self.wrapped[idx].values():
-                module.t = t
+    def _all_modules(self) -> list[CATQLinear]:
+        return [m for mods in self.wrapped.values() for m in mods.values()]
 
     def _set_fp_mode(self, layer_indices: list[int], fp_mode: bool) -> None:
         for idx in layer_indices:
-            for module in self.wrapped[idx].values():
-                module.fp_mode = fp_mode
+            if idx in self.wrapped:
+                for module in self.wrapped[idx].values():
+                    module.fp_mode = fp_mode
 
     def _window_params(self, layer_indices: list[int]) -> list[dict[str, object]]:
         cfg = self.config
+        lr_factor = cfg.batch_size if cfg.scale_lr_by_batch else 1
         factors: list[nn.Parameter] = []
         lora: list[nn.Parameter] = []
         for idx in layer_indices:
@@ -176,9 +181,11 @@ class SlidingWindowQuantizer:
                     factors.append(m.cs_scale)
                 if m.lora_A is not None:
                     lora += [m.lora_A, m.lora_B]
-        groups: list[dict[str, object]] = [{"params": factors, "lr": cfg.lr}]
+        groups: list[dict[str, object]] = [
+            {"params": factors, "lr": cfg.lr * lr_factor, "weight_decay": 0.0}
+        ]
         if lora:
-            groups.append({"params": lora, "lr": cfg.lora_lr})
+            groups.append({"params": lora, "lr": cfg.lora_lr * lr_factor, "weight_decay": 0.0})
         return groups
 
     # ------------------------------------------------------------- forward
@@ -196,22 +203,25 @@ class SlidingWindowQuantizer:
         return hidden
 
     @torch.no_grad()
-    def _compute_targets(
+    def _forward_window_batched(
         self,
         layer_indices: list[int],
         hidden: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        fp_mode: bool = False,
     ) -> torch.Tensor:
-        """FP window outputs on the same X: pristine pretrained weights."""
-        self._set_fp_mode(layer_indices, True)
-        target = torch.empty_like(hidden)
+        """Batched no-grad window forward; fp_mode selects the FP teacher."""
+        if fp_mode:
+            self._set_fp_mode(layer_indices, True)
+        out = torch.empty_like(hidden)
         for i in range(0, hidden.shape[0], self.config.batch_size):
             batch = hidden[i : i + self.config.batch_size]
-            target[i : i + batch.shape[0]] = self._forward_window(
+            out[i : i + batch.shape[0]] = self._forward_window(
                 layer_indices, batch, position_embeddings
             )
-        self._set_fp_mode(layer_indices, False)
-        return target
+        if fp_mode:
+            self._set_fp_mode(layer_indices, False)
+        return out
 
     @torch.no_grad()
     def _window_loss(
@@ -220,9 +230,12 @@ class SlidingWindowQuantizer:
         hidden: torch.Tensor,
         target: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        t: float,
+        t: float | None = None,
     ) -> float:
-        self._set_time(layer_indices, t)
+        saved = [(m, m.t) for idx in layer_indices for m in self.wrapped[idx].values()]
+        if t is not None:
+            for m, _ in saved:
+                m.t = t
         total = 0.0
         for i in range(0, hidden.shape[0], self.config.batch_size):
             batch = hidden[i : i + self.config.batch_size]
@@ -230,98 +243,130 @@ class SlidingWindowQuantizer:
             total += window_loss_fn(
                 out, target[i : i + batch.shape[0]], self.config.loss
             ).item() * batch.shape[0]
+        for m, t_saved in saved:
+            m.t = t_saved
         return total / hidden.shape[0]
 
     # ----------------------------------------------------------------- run
 
-    def run(self, input_ids: torch.Tensor) -> list[WindowLog]:
+    def run(self, input_ids: torch.Tensor) -> RunResult:
         cfg = self.config
         n_layers = len(self.layers)
         schedule = build_schedule(n_layers, cfg)
-        hidden, position_embeddings = self._build_inputs(input_ids)
-        num_samples = hidden.shape[0]
+        num_passes = len(cfg.quant_rates)
+        pass_epochs = max(cfg.epochs // num_passes, 1)
+        num_samples = input_ids.shape[0]
         logs: list[WindowLog] = []
 
-        # Per-layer lifetime epoch budget: t advances across all windows that
-        # contain the layer and hits 1.0 in its last window (see module note).
+        # Lifetime ST schedule: t advances across all windows (in all passes)
+        # containing the layer and reaches 1.0 in its final window.
+        windows_per_layer = {
+            idx: sum(idx in layers for layers in schedule) for idx in range(n_layers)
+        }
         total_epochs = {
-            idx: cfg.epochs * sum(idx in layers for layers, _ in schedule)
-            for idx in range(n_layers)
+            idx: pass_epochs * num_passes * windows_per_layer[idx] for idx in range(n_layers)
         }
         done_epochs = {idx: 0 for idx in range(n_layers)}
 
-        for w, (layer_indices, finalize_indices) in enumerate(schedule):
-            for idx in layer_indices:
-                self._wrap_layer(idx)
+        for pass_index, quant_rate in enumerate(cfg.quant_rates):
+            hidden_q, position_embeddings = self._build_inputs(input_ids)
+            hidden_fp = hidden_q.clone()
+            for m in self._all_modules():
+                m.set_quant_rate(quant_rate)
 
-            target = self._compute_targets(layer_indices, hidden, position_embeddings)
-            hard_init_loss = self._window_loss(
-                layer_indices, hidden, target, position_embeddings, t=1.0
-            )
-
-            optimizer = torch.optim.AdamW(self._window_params(layer_indices))
-            steps_per_epoch = (num_samples + cfg.batch_size - 1) // cfg.batch_size
-            total_steps = cfg.epochs * steps_per_epoch
-            scheduler = torch.optim.lr_scheduler.LambdaLR(
-                optimizer, lambda step: 1.0 - step / total_steps
-            )
-
-            generator = torch.Generator().manual_seed(cfg.seed + w)
-            initial_loss = final_loss = float("nan")
-            for epoch in range(1, cfg.epochs + 1):
+            for w, layer_indices in enumerate(schedule):
                 for idx in layer_indices:
-                    t = (done_epochs[idx] + epoch) / total_epochs[idx]
-                    for module in self.wrapped[idx].values():
-                        module.t = t
-                perm = torch.randperm(num_samples, generator=generator)
-                epoch_loss = 0.0
-                for i in range(0, num_samples, cfg.batch_size):
-                    idx = perm[i : i + cfg.batch_size]
-                    out = self._forward_window(layer_indices, hidden[idx], position_embeddings)
-                    loss = window_loss_fn(out, target[idx], cfg.loss)
-                    optimizer.zero_grad(set_to_none=True)
-                    loss.backward()
-                    optimizer.step()
-                    scheduler.step()
-                    epoch_loss += loss.item() * idx.shape[0]
-                epoch_loss /= num_samples
-                if epoch == 1:
-                    initial_loss = epoch_loss
-                final_loss = epoch_loss
-                if epoch % 20 == 0 or epoch == 1:
-                    logger.info(
-                        "window %d/%d layers=%s epoch %d/%d loss=%.6f",
-                        w + 1, len(schedule), layer_indices, epoch, cfg.epochs, epoch_loss,
-                    )
+                    self._wrap_layer(idx)
+                    for m in self.wrapped[idx].values():
+                        m.set_quant_rate(quant_rate)
 
-            for idx in layer_indices:
-                done_epochs[idx] += cfg.epochs
+                # Target: FP teacher on the FP stream (error-correcting objective).
+                target = self._forward_window_batched(
+                    layer_indices, hidden_fp, position_embeddings, fp_mode=True
+                )
+                hard_init_loss = self._window_loss(
+                    layer_indices, hidden_q, target, position_embeddings, t=1.0
+                )
 
-            layer_stats: dict[str, dict[str, float]] = {}
-            for idx in finalize_indices:
-                layer_stats.update(self._finalize_layer(idx))
-                with torch.no_grad():
+                optimizer = torch.optim.AdamW(self._window_params(layer_indices))
+                steps_per_epoch = (num_samples + cfg.batch_size - 1) // cfg.batch_size
+                total_steps = pass_epochs * steps_per_epoch
+                scheduler = torch.optim.lr_scheduler.LambdaLR(
+                    optimizer, lambda step: 1.0 - step / total_steps
+                )
+
+                generator = torch.Generator().manual_seed(cfg.seed + pass_index * 1000 + w)
+                initial_loss = final_loss = float("nan")
+                for epoch in range(1, pass_epochs + 1):
+                    for idx in layer_indices:
+                        t = (done_epochs[idx] + epoch) / total_epochs[idx]
+                        for module in self.wrapped[idx].values():
+                            module.t = t
+                    perm = torch.randperm(num_samples, generator=generator)
+                    epoch_loss = 0.0
                     for i in range(0, num_samples, cfg.batch_size):
-                        batch = hidden[i : i + cfg.batch_size]
-                        hidden[i : i + batch.shape[0]] = self.layers[idx](
-                            batch, attention_mask=None, position_embeddings=position_embeddings
+                        idx_batch = perm[i : i + cfg.batch_size]
+                        out = self._forward_window(
+                            layer_indices, hidden_q[idx_batch], position_embeddings
+                        )
+                        loss = window_loss_fn(out, target[idx_batch], cfg.loss)
+                        optimizer.zero_grad(set_to_none=True)
+                        loss.backward()
+                        optimizer.step()
+                        scheduler.step()
+                        epoch_loss += loss.item() * idx_batch.shape[0]
+                    epoch_loss /= num_samples
+                    if epoch == 1:
+                        initial_loss = epoch_loss
+                    final_loss = epoch_loss
+                    if epoch % 10 == 0 or epoch == 1:
+                        logger.info(
+                            "pass %d/%d (rate %.2f) window %d/%d layers=[%d..%d] epoch %d/%d loss=%.6f",
+                            pass_index + 1, num_passes, quant_rate, w + 1, len(schedule),
+                            layer_indices[0], layer_indices[-1], epoch, pass_epochs, epoch_loss,
                         )
 
-            logs.append(
-                WindowLog(
-                    window_start=layer_indices[0],
-                    layers=layer_indices,
-                    finalized=finalize_indices,
-                    hard_init_loss=hard_init_loss,
-                    initial_loss=initial_loss,
-                    final_loss=final_loss,
-                    layer_stats=layer_stats,
-                )
-            )
-            logger.info(
-                "window %d/%d done: finalized %s (hard-init %.6f, epoch loss %.6f -> %.6f)",
-                w + 1, len(schedule), finalize_indices or "none", hard_init_loss, initial_loss, final_loss,
-            )
+                for idx in layer_indices:
+                    done_epochs[idx] += pass_epochs
 
-        assert not self.wrapped, "all layers should be finalized"
-        return logs
+                # Advance both streams up to the next window's start.
+                next_start = schedule[w + 1][0] if w + 1 < len(schedule) else layer_indices[0]
+                advance = list(range(layer_indices[0], next_start))
+                if advance:
+                    hidden_fp = self._forward_window_batched(
+                        advance, hidden_fp, position_embeddings, fp_mode=True
+                    )
+                    hidden_q = self._forward_window_batched(
+                        advance, hidden_q, position_embeddings
+                    )
+
+                logs.append(
+                    WindowLog(
+                        pass_index=pass_index,
+                        quant_rate=quant_rate,
+                        window_start=layer_indices[0],
+                        layers=layer_indices,
+                        hard_init_loss=hard_init_loss,
+                        initial_loss=initial_loss,
+                        final_loss=final_loss,
+                    )
+                )
+                logger.info(
+                    "pass %d window %d/%d done (hard-init %.6f, epoch loss %.6f -> %.6f)",
+                    pass_index + 1, w + 1, len(schedule), hard_init_loss, initial_loss, final_loss,
+                )
+
+            del hidden_q, hidden_fp, target
+            torch.cuda.empty_cache()
+
+        # Bake: hard-ternarize every wrapped linear with its final parameters.
+        layer_stats: dict[str, dict[str, float]] = {}
+        for idx in sorted(self.wrapped):
+            assert done_epochs[idx] == total_epochs[idx]
+            for name, module in self.wrapped[idx].items():
+                linear, stats = module.finalize()
+                _set_submodule(self.layers[idx], name, linear)
+                layer_stats[f"layer{idx}.{name}"] = stats
+        self.wrapped.clear()
+        logger.info("baked %d ternary linears", len(layer_stats))
+        return RunResult(windows=logs, layer_stats=layer_stats)

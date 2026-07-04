@@ -28,13 +28,17 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=defaults.lr)
     parser.add_argument("--group-size", type=int, default=defaults.group_size)
     parser.add_argument("--window-size", type=int, default=defaults.window_size)
+    parser.add_argument("--stride", type=int, default=defaults.stride)
+    parser.add_argument("--fill-window-size", type=int, default=defaults.fill_window_size)
+    parser.add_argument(
+        "--quant-rates", type=float, nargs="+", default=list(defaults.quant_rates)
+    )
     parser.add_argument("--gamma", type=float, default=defaults.gamma)
     parser.add_argument("--s0", type=float, default=defaults.s0)
     parser.add_argument("--seed", type=int, default=defaults.seed)
-    parser.add_argument("--schedule", choices=["sliderquant", "fixed"], default=defaults.schedule)
     parser.add_argument("--lora-rank", type=int, default=defaults.lora_rank)
     parser.add_argument("--lora-lr", type=float, default=defaults.lora_lr)
-    parser.add_argument("--no-cs", action="store_true", help="disable channel-wise scaling")
+    parser.add_argument("--cs", action="store_true", help="enable channel-wise scaling")
     parser.add_argument("--loss", choices=["mse", "token_rms"], default=defaults.loss)
     args = parser.parse_args()
 
@@ -51,13 +55,15 @@ def main() -> None:
         lr=args.lr,
         group_size=args.group_size,
         window_size=args.window_size,
+        stride=args.stride,
+        fill_window_size=args.fill_window_size,
+        quant_rates=tuple(args.quant_rates),
         gamma=args.gamma,
         s0=args.s0,
         seed=args.seed,
-        schedule=args.schedule,
         lora_rank=args.lora_rank,
         lora_lr=args.lora_lr,
-        cs_enabled=not args.no_cs,
+        cs_enabled=args.cs,
         loss=args.loss,
     )
     output_dir = quantize_model(config)

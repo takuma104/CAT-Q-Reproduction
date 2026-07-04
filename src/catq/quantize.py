@@ -46,21 +46,20 @@ def quantize_model(config: CATQConfig) -> Path:
 
     start_time = time.time()
     quantizer = SlidingWindowQuantizer(model, config)
-    logs = quantizer.run(input_ids)
+    result = quantizer.run(input_ids)
     elapsed = time.time() - start_time
     logger.info("Quantization finished in %.1f min", elapsed / 60)
 
     model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
 
-    zero_fractions = [
-        stats["zero_fraction"] for log in logs for stats in log.layer_stats.values()
-    ]
+    zero_fractions = [stats["zero_fraction"] for stats in result.layer_stats.values()]
     report = {
         "config": dataclasses.asdict(config),
         "elapsed_sec": elapsed,
         "mean_zero_fraction": sum(zero_fractions) / len(zero_fractions),
-        "windows": [dataclasses.asdict(log) for log in logs],
+        "windows": [dataclasses.asdict(log) for log in result.windows],
+        "layer_stats": result.layer_stats,
     }
     (output_dir / "catq_log.json").write_text(json.dumps(report, indent=2))
     return output_dir

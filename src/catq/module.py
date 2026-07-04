@@ -58,6 +58,10 @@ class CATQLinear(nn.Module):
         # When True, forward bypasses CS/LoRA/quantization and uses the pristine
         # pretrained weight — used to compute FP window targets (Eq. 7 LHS).
         self.fp_mode: bool = False
+        # Intra-layer sliding (SliderQuant reference, quantizer.py): only the
+        # first ceil(in_features * rate) input channels are quantized; the
+        # rest stay full precision. None means quantize everything.
+        self.quant_mask: torch.Tensor | None = None
 
         weight = linear.weight.detach().to(torch.float32)
         self.register_buffer("weight_fp", weight)
@@ -104,6 +108,16 @@ class CATQLinear(nn.Module):
     def delta_delta(self) -> torch.Tensor:
         return F.softplus(self.rho_delta).clamp_min(1e-6)
 
+    def set_quant_rate(self, rate: float) -> None:
+        if rate >= 0.99:
+            self.quant_mask = None
+            return
+        cutoff = math.ceil(self.in_features * rate)
+        flat_index = torch.arange(
+            self.mask.numel(), device=self.mask.device
+        ).reshape(self.mask.shape)
+        self.quant_mask = (flat_index % self.in_features) < cutoff
+
     def _cs(self) -> torch.Tensor | None:
         if self.cs_scale is None:
             return None
@@ -131,16 +145,21 @@ class CATQLinear(nn.Module):
 
     def effective_weight(self) -> torch.Tensor:
         """Weight alpha * T for the current time state t (Eq. 6), in compute dtype."""
+        w_tilde = self._weight_tilde()
         if self.t <= 0.0:
-            wq = self._weight_tilde()
+            wq = w_tilde
         else:
-            w_hat, alpha, delta = self._modulated(self._weight_tilde())
+            w_hat, alpha, delta = self._modulated(w_tilde)
             if self.t <= self.gamma:
                 s = (self.t / self.gamma) * self.s0
                 ternary = smooth_transition(w_hat, s, delta)
             else:
                 ternary = hard_ternarize_ste(w_hat, delta, self.s0)
-            wq = from_groups(alpha * ternary, self.weight_shape)
+            wq_groups = alpha * ternary
+            if self.quant_mask is not None:
+                w_tilde_groups, _ = to_groups(w_tilde, self.group_size)
+                wq_groups = torch.where(self.quant_mask, wq_groups, w_tilde_groups)
+            wq = from_groups(wq_groups, self.weight_shape)
         return wq.to(self.compute_dtype)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
