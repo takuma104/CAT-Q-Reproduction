@@ -63,12 +63,16 @@ class CATQLinear(nn.Module):
         # rest stay full precision. None means quantize everything.
         self.quant_mask: torch.Tensor | None = None
 
-        weight = linear.weight.detach().to(torch.float32)
-        self.register_buffer("weight_fp", weight)
-        _, mask = to_groups(weight, group_size)
-        self.register_buffer("mask", mask)
-
-        n_groups = mask.shape[0]
+        # Kept in the original dtype (no information is lost: the pretrained
+        # weights are bf16); upcast to fp32 transiently per forward.
+        self.register_buffer("weight_fp", linear.weight.detach().clone())
+        groups, mask = to_groups(linear.weight.detach(), group_size)
+        n_groups = groups.shape[0]
+        # Only keep the validity mask when there is tail padding.
+        if bool(mask.all()):
+            self.mask = None
+        else:
+            self.register_buffer("mask", mask)
         self.rho_mu = nn.Parameter(torch.zeros(n_groups, 1))
         self.rho_alpha = nn.Parameter(torch.full((n_groups, 1), _SOFTPLUS_INV_ONE))
         self.rho_delta = nn.Parameter(torch.full((n_groups, 1), _SOFTPLUS_INV_ONE))
@@ -109,14 +113,21 @@ class CATQLinear(nn.Module):
         return F.softplus(self.rho_delta).clamp_min(1e-6)
 
     def set_quant_rate(self, rate: float) -> None:
+        """Group-granular partial quantization mask ([n_groups, 1] bool).
+
+        A group is quantized when its starting column lies below
+        ceil(in_features * rate); Qwen3 layer widths are multiples of
+        2 * group_size, so the cutoff falls on a group boundary.
+        """
         if rate >= 0.99:
             self.quant_mask = None
             return
         cutoff = math.ceil(self.in_features * rate)
-        flat_index = torch.arange(
-            self.mask.numel(), device=self.mask.device
-        ).reshape(self.mask.shape)
-        self.quant_mask = (flat_index % self.in_features) < cutoff
+        n_groups = self.rho_mu.shape[0]
+        start_col = (
+            torch.arange(n_groups, device=self.rho_mu.device) * self.group_size
+        ) % self.in_features
+        self.quant_mask = (start_col < cutoff).reshape(-1, 1)
 
     def _cs(self) -> torch.Tensor | None:
         if self.cs_scale is None:
@@ -125,7 +136,7 @@ class CATQLinear(nn.Module):
 
     def _weight_tilde(self) -> torch.Tensor:
         """SliderQuant-refined weight W * s + B @ A (fp32)."""
-        w = self.weight_fp
+        w = self.weight_fp.to(torch.float32)
         cs = self._cs()
         if cs is not None:
             w = w * cs
@@ -193,9 +204,9 @@ class CATQLinear(nn.Module):
         if self.bias is not None:
             linear.bias.copy_(self.bias)
 
-        valid = self.mask
+        valid_ternary = ternary if self.mask is None else ternary[self.mask]
         stats = {
-            "zero_fraction": float((ternary[valid] == 0).float().mean()),
+            "zero_fraction": float((valid_ternary == 0).float().mean()),
             "recon_error": float((from_groups(alpha * ternary - to_groups(w_tilde, self.group_size)[0], self.weight_shape) ** 2).sum()),
         }
         return linear, stats

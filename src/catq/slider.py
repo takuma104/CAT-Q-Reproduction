@@ -209,11 +209,16 @@ class SlidingWindowQuantizer:
         hidden: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         fp_mode: bool = False,
+        inplace: bool = False,
     ) -> torch.Tensor:
-        """Batched no-grad window forward; fp_mode selects the FP teacher."""
+        """Batched no-grad window forward; fp_mode selects the FP teacher.
+
+        With inplace=True the result overwrites `hidden` batch by batch
+        (used for stream advancement, avoiding a full-size extra buffer).
+        """
         if fp_mode:
             self._set_fp_mode(layer_indices, True)
-        out = torch.empty_like(hidden)
+        out = hidden if inplace else torch.empty_like(hidden)
         for i in range(0, hidden.shape[0], self.config.batch_size):
             batch = hidden[i : i + self.config.batch_size]
             out[i : i + batch.shape[0]] = self._forward_window(
@@ -333,12 +338,14 @@ class SlidingWindowQuantizer:
                 next_start = schedule[w + 1][0] if w + 1 < len(schedule) else layer_indices[0]
                 advance = list(range(layer_indices[0], next_start))
                 if advance:
-                    hidden_fp = self._forward_window_batched(
-                        advance, hidden_fp, position_embeddings, fp_mode=True
+                    self._forward_window_batched(
+                        advance, hidden_fp, position_embeddings, fp_mode=True, inplace=True
                     )
-                    hidden_q = self._forward_window_batched(
-                        advance, hidden_q, position_embeddings
+                    self._forward_window_batched(
+                        advance, hidden_q, position_embeddings, inplace=True
                     )
+                del target
+                torch.cuda.empty_cache()
 
                 logs.append(
                     WindowLog(
@@ -356,7 +363,7 @@ class SlidingWindowQuantizer:
                     pass_index + 1, w + 1, len(schedule), hard_init_loss, initial_loss, final_loss,
                 )
 
-            del hidden_q, hidden_fp, target
+            del hidden_q, hidden_fp
             torch.cuda.empty_cache()
 
         # Bake: hard-ternarize every wrapped linear with its final parameters.

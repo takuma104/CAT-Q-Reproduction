@@ -29,13 +29,19 @@ def from_groups(groups: torch.Tensor, shape: torch.Size) -> torch.Tensor:
     return groups.reshape(-1)[:numel].reshape(shape)
 
 
-def group_stats(groups: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+def group_stats(
+    groups: torch.Tensor, mask: torch.Tensor | None
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Per-group mu0 = mean(W) and alpha0 = mean(|W - mu0|), shapes [n_groups, 1].
 
+    `mask` may be None when there is no tail padding (all elements valid).
     alpha0 is clamped away from zero since it divides the transformed weights.
     """
-    counts = mask.sum(dim=1, keepdim=True).to(groups.dtype)
-    mu0 = (groups * mask).sum(dim=1, keepdim=True) / counts
-    alpha0 = ((groups - mu0).abs() * mask).sum(dim=1, keepdim=True) / counts
-    alpha0 = alpha0.clamp_min(1e-8)
-    return mu0, alpha0
+    if mask is None:
+        mu0 = groups.mean(dim=1, keepdim=True)
+        alpha0 = (groups - mu0).abs().mean(dim=1, keepdim=True)
+    else:
+        counts = mask.sum(dim=1, keepdim=True).to(groups.dtype)
+        mu0 = (groups * mask).sum(dim=1, keepdim=True) / counts
+        alpha0 = ((groups - mu0).abs() * mask).sum(dim=1, keepdim=True) / counts
+    return mu0, alpha0.clamp_min(1e-8)
