@@ -91,6 +91,35 @@ def test_sliding_window_end_to_end() -> None:
     assert torch.isfinite(out).all()
 
 
+def test_polish_pass_runs_hard_and_bakes() -> None:
+    model = build_tiny_model()
+    config = CATQConfig(
+        num_calib_samples=6,
+        seq_len=32,
+        group_size=32,
+        epochs=4,  # 2 per main pass
+        polish_epochs=2,
+        batch_size=3,
+        window_size=2,
+        stride=1,
+        device="cpu",
+    )
+    input_ids = torch.randint(0, 128, (config.num_calib_samples, config.seq_len))
+    result = SlidingWindowQuantizer(model, config).run(input_ids)
+
+    # 2 main passes + 1 polish pass over the fallback schedule ([0,1],[1,2]).
+    assert len(result.windows) == 6
+    polish = [w for w in result.windows if w.pass_index == 2]
+    assert len(polish) == 2
+    assert all(w.quant_rate == 1.0 for w in polish)
+    assert all(torch.isfinite(torch.tensor(w.final_loss)) for w in polish)
+    assert len(result.layer_stats) == 3 * 7
+
+    with torch.no_grad():
+        out = model(input_ids[:2]).logits
+    assert torch.isfinite(out).all()
+
+
 def test_partial_quant_rate_mask() -> None:
     from torch import nn
 

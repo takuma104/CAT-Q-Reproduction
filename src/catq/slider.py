@@ -274,7 +274,15 @@ class SlidingWindowQuantizer:
         }
         done_epochs = {idx: 0 for idx in range(n_layers)}
 
-        for pass_index, quant_rate in enumerate(cfg.quant_rates):
+        # Main passes anneal t over each layer's lifetime; the optional polish
+        # pass re-runs the schedule with t pinned at 1.0 (hard STE).
+        pass_specs: list[tuple[float, int, bool]] = [
+            (rate, pass_epochs, True) for rate in cfg.quant_rates
+        ]
+        if cfg.polish_epochs > 0:
+            pass_specs.append((1.0, cfg.polish_epochs, False))
+
+        for pass_index, (quant_rate, cur_epochs, anneal) in enumerate(pass_specs):
             hidden_q, position_embeddings = self._build_inputs(input_ids)
             hidden_fp = hidden_q.clone()
             for m in self._all_modules():
@@ -296,16 +304,16 @@ class SlidingWindowQuantizer:
 
                 optimizer = torch.optim.AdamW(self._window_params(layer_indices))
                 steps_per_epoch = (num_samples + cfg.batch_size - 1) // cfg.batch_size
-                total_steps = pass_epochs * steps_per_epoch
+                total_steps = cur_epochs * steps_per_epoch
                 scheduler = torch.optim.lr_scheduler.LambdaLR(
                     optimizer, lambda step: 1.0 - step / total_steps
                 )
 
                 generator = torch.Generator().manual_seed(cfg.seed + pass_index * 1000 + w)
                 initial_loss = final_loss = float("nan")
-                for epoch in range(1, pass_epochs + 1):
+                for epoch in range(1, cur_epochs + 1):
                     for idx in layer_indices:
-                        t = (done_epochs[idx] + epoch) / total_epochs[idx]
+                        t = (done_epochs[idx] + epoch) / total_epochs[idx] if anneal else 1.0
                         for module in self.wrapped[idx].values():
                             module.t = t
                     perm = torch.randperm(num_samples, generator=generator)
@@ -328,12 +336,13 @@ class SlidingWindowQuantizer:
                     if epoch % 10 == 0 or epoch == 1:
                         logger.info(
                             "pass %d/%d (rate %.2f) window %d/%d layers=[%d..%d] epoch %d/%d loss=%.6f",
-                            pass_index + 1, num_passes, quant_rate, w + 1, len(schedule),
-                            layer_indices[0], layer_indices[-1], epoch, pass_epochs, epoch_loss,
+                            pass_index + 1, len(pass_specs), quant_rate, w + 1, len(schedule),
+                            layer_indices[0], layer_indices[-1], epoch, cur_epochs, epoch_loss,
                         )
 
-                for idx in layer_indices:
-                    done_epochs[idx] += pass_epochs
+                if anneal:
+                    for idx in layer_indices:
+                        done_epochs[idx] += pass_epochs
 
                 # Advance both streams up to the next window's start.
                 next_start = schedule[w + 1][0] if w + 1 < len(schedule) else layer_indices[0]

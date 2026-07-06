@@ -61,6 +61,10 @@ class CATQConfig:
     # first input channels), "alpha_asc" (smallest alpha0, i.e. least salient
     # groups first) or "alpha_desc" (largest alpha0 first).
     quant_order: str = "column"
+    # Extra polish pass after the main passes: one more run of the window
+    # schedule at quant_rate 1.0 with t pinned to 1.0 (hard STE), adapting
+    # LoRA and the LM factors under the exact final ternarization.
+    polish_epochs: int = 0
 
     # Module name suffixes inside decoder layers to quantize.
     # Embeddings, lm_head and norms stay in high precision (BitNet convention).
