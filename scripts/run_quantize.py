@@ -46,7 +46,9 @@ def main() -> None:
     parser.add_argument("--lora-rank", type=int, default=defaults.lora_rank)
     parser.add_argument("--lora-lr", type=float, default=defaults.lora_lr)
     parser.add_argument("--cs", action="store_true", help="enable channel-wise scaling")
-    parser.add_argument("--loss", choices=["mse", "token_rms"], default=defaults.loss)
+    parser.add_argument(
+        "--loss", choices=["mse", "token_rms", "chan_weight"], default=defaults.loss
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
