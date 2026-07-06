@@ -33,8 +33,14 @@ def main() -> None:
     parser.add_argument(
         "--quant-rates", type=float, nargs="+", default=list(defaults.quant_rates)
     )
+    parser.add_argument(
+        "--quant-order",
+        choices=["column", "alpha_asc", "alpha_desc"],
+        default=defaults.quant_order,
+    )
     parser.add_argument("--gamma", type=float, default=defaults.gamma)
     parser.add_argument("--s0", type=float, default=defaults.s0)
+    parser.add_argument("--delta0", type=float, default=defaults.delta0)
     parser.add_argument("--seed", type=int, default=defaults.seed)
     parser.add_argument("--lora-rank", type=int, default=defaults.lora_rank)
     parser.add_argument("--lora-lr", type=float, default=defaults.lora_lr)
@@ -58,8 +64,10 @@ def main() -> None:
         stride=args.stride,
         fill_window_size=args.fill_window_size,
         quant_rates=tuple(args.quant_rates),
+        quant_order=args.quant_order,
         gamma=args.gamma,
         s0=args.s0,
+        delta0=args.delta0,
         seed=args.seed,
         lora_rank=args.lora_rank,
         lora_lr=args.lora_lr,

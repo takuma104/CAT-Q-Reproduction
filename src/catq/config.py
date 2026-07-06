@@ -57,6 +57,10 @@ class CATQConfig:
     # (progressively ternarizing the first fraction of input channels), with
     # epochs split evenly across passes.
     quant_rates: tuple[float, ...] = (0.5, 1.0)
+    # Which groups the partial pass quantizes first: "column" (reference:
+    # first input channels), "alpha_asc" (smallest alpha0, i.e. least salient
+    # groups first) or "alpha_desc" (largest alpha0 first).
+    quant_order: str = "column"
 
     # Module name suffixes inside decoder layers to quantize.
     # Embeddings, lm_head and norms stay in high precision (BitNet convention).

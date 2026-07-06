@@ -155,6 +155,7 @@ class SlidingWindowQuantizer:
                 gamma=cfg.gamma,
                 lora_rank=cfg.lora_rank,
                 cs_enabled=cfg.cs_enabled,
+                quant_order=cfg.quant_order,
             ).to(self.device)
             _set_submodule(self.layers[idx], name, module)
             wrapped[name] = module

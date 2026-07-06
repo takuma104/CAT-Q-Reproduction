@@ -43,9 +43,11 @@ class CATQLinear(nn.Module):
         gamma: float = 0.8,
         lora_rank: int = 4,
         cs_enabled: bool = True,
+        quant_order: str = "column",
     ) -> None:
         super().__init__()
         self.group_size = group_size
+        self.quant_order = quant_order
         self.delta0 = delta0
         self.s0 = s0
         self.gamma = gamma
@@ -122,12 +124,25 @@ class CATQLinear(nn.Module):
         if rate >= 0.99:
             self.quant_mask = None
             return
-        cutoff = math.ceil(self.in_features * rate)
         n_groups = self.rho_mu.shape[0]
-        start_col = (
-            torch.arange(n_groups, device=self.rho_mu.device) * self.group_size
-        ) % self.in_features
-        self.quant_mask = (start_col < cutoff).reshape(-1, 1)
+        if self.quant_order == "column":
+            cutoff = math.ceil(self.in_features * rate)
+            start_col = (
+                torch.arange(n_groups, device=self.rho_mu.device) * self.group_size
+            ) % self.in_features
+            self.quant_mask = (start_col < cutoff).reshape(-1, 1)
+            return
+        # Salience order: rank groups by alpha0 of the current W_tilde and
+        # quantize the first ceil(n_groups * rate) in that order.
+        with torch.no_grad():
+            w_groups, _ = to_groups(self._weight_tilde(), self.group_size)
+            _, alpha0 = group_stats(w_groups, self.mask)
+        order = torch.argsort(
+            alpha0.squeeze(1), descending=self.quant_order == "alpha_desc"
+        )
+        mask = torch.zeros(n_groups, dtype=torch.bool, device=order.device)
+        mask[order[: math.ceil(n_groups * rate)]] = True
+        self.quant_mask = mask.reshape(-1, 1)
 
     def _cs(self) -> torch.Tensor | None:
         if self.cs_scale is None:
