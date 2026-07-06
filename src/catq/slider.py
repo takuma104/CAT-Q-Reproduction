@@ -62,13 +62,6 @@ def window_loss_fn(out: torch.Tensor, target: torch.Tensor, kind: str) -> torch.
     if kind == "token_rms":
         norm = target.pow(2).mean(dim=-1, keepdim=True).sqrt().clamp_min(1e-6)
         return torch.nn.functional.mse_loss(out / norm, target / norm)
-    if kind == "chan_weight":
-        # Weight each hidden channel by its target RMS (mean 1) so errors on
-        # massive-activation channels cost more, countering the regression
-        # dilution of their amplitude under plain MSE.
-        rms = target.pow(2).mean(dim=tuple(range(target.dim() - 1))).sqrt().clamp_min(1e-6)
-        weight = (rms / rms.mean()).detach()
-        return ((out - target).pow(2) * weight).mean()
     return torch.nn.functional.mse_loss(out, target)
 
 
