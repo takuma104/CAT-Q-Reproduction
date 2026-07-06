@@ -87,27 +87,6 @@ def test_finalize_matches_hard_stage() -> None:
     assert 0.0 <= stats["zero_fraction"] <= 1.0
 
 
-def test_quant_order_salience_mask() -> None:
-    for order, descending in (("alpha_asc", False), ("alpha_desc", True)):
-        _, module = make_module(quant_order=order)
-        module.set_quant_rate(0.5)
-        assert module.quant_mask is not None
-        n_groups = module.rho_mu.shape[0]
-        assert int(module.quant_mask.sum()) == (n_groups + 1) // 2
-        # Selected groups must be the extremes of the alpha0 ranking.
-        from catq.ternary import group_stats, to_groups
-
-        groups, _ = to_groups(module._weight_tilde(), module.group_size)
-        _, alpha0 = group_stats(groups, module.mask)
-        ranked = torch.argsort(alpha0.squeeze(1), descending=descending)
-        expected = torch.zeros(n_groups, dtype=torch.bool)
-        expected[ranked[: (n_groups + 1) // 2]] = True
-        assert torch.equal(module.quant_mask.squeeze(1).cpu(), expected)
-        # Full rate disables the mask.
-        module.set_quant_rate(1.0)
-        assert module.quant_mask is None
-
-
 def test_no_bias() -> None:
     _, module = make_module(bias=False)
     x = torch.randn(2, 48)

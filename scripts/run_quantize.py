@@ -33,11 +33,6 @@ def main() -> None:
     parser.add_argument(
         "--quant-rates", type=float, nargs="+", default=list(defaults.quant_rates)
     )
-    parser.add_argument(
-        "--quant-order",
-        choices=["column", "alpha_asc", "alpha_desc"],
-        default=defaults.quant_order,
-    )
     parser.add_argument("--gamma", type=float, default=defaults.gamma)
     parser.add_argument("--s0", type=float, default=defaults.s0)
     parser.add_argument("--delta0", type=float, default=defaults.delta0)
@@ -67,7 +62,6 @@ def main() -> None:
         stride=args.stride,
         fill_window_size=args.fill_window_size,
         quant_rates=tuple(args.quant_rates),
-        quant_order=args.quant_order,
         gamma=args.gamma,
         s0=args.s0,
         delta0=args.delta0,

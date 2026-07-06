@@ -57,10 +57,6 @@ class CATQConfig:
     # (progressively ternarizing the first fraction of input channels), with
     # epochs split evenly across passes.
     quant_rates: tuple[float, ...] = (0.5, 1.0)
-    # Which groups the partial pass quantizes first: "column" (reference:
-    # first input channels), "alpha_asc" (smallest alpha0, i.e. least salient
-    # groups first) or "alpha_desc" (largest alpha0 first).
-    quant_order: str = "column"
     # Extra polish pass after the main passes: one more run of the window
     # schedule at quant_rate 1.0 with t pinned to 1.0 (hard STE), adapting
     # LoRA and the LM factors under the exact final ternarization.
