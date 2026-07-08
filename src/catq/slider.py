@@ -301,7 +301,9 @@ class SlidingWindowQuantizer:
                     layer_indices, hidden_q, target, position_embeddings, t=1.0
                 )
 
-                optimizer = torch.optim.AdamW(self._window_params(layer_indices))
+                param_groups = self._window_params(layer_indices)
+                flat_params = [p for g in param_groups for p in g["params"]]  # type: ignore[union-attr]
+                optimizer = torch.optim.AdamW(param_groups)
                 steps_per_epoch = (num_samples + cfg.batch_size - 1) // cfg.batch_size
                 total_steps = cur_epochs * steps_per_epoch
                 scheduler = torch.optim.lr_scheduler.LambdaLR(
@@ -325,6 +327,8 @@ class SlidingWindowQuantizer:
                         loss = window_loss_fn(out, target[idx_batch], cfg.loss)
                         optimizer.zero_grad(set_to_none=True)
                         loss.backward()
+                        if cfg.grad_clip is not None:
+                            torch.nn.utils.clip_grad_norm_(flat_params, cfg.grad_clip)
                         optimizer.step()
                         scheduler.step()
                         epoch_loss += loss.item() * idx_batch.shape[0]

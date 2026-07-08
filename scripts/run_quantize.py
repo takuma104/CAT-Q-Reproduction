@@ -37,6 +37,7 @@ def main() -> None:
     parser.add_argument("--s0", type=float, default=defaults.s0)
     parser.add_argument("--delta0", type=float, default=defaults.delta0)
     parser.add_argument("--polish-epochs", type=int, default=defaults.polish_epochs)
+    parser.add_argument("--grad-clip", type=float, default=defaults.grad_clip)
     parser.add_argument("--seed", type=int, default=defaults.seed)
     parser.add_argument("--lora-rank", type=int, default=defaults.lora_rank)
     parser.add_argument("--lora-lr", type=float, default=defaults.lora_lr)
@@ -64,6 +65,7 @@ def main() -> None:
         s0=args.s0,
         delta0=args.delta0,
         polish_epochs=args.polish_epochs,
+        grad_clip=args.grad_clip,
         seed=args.seed,
         lora_rank=args.lora_rank,
         lora_lr=args.lora_lr,

@@ -48,6 +48,10 @@ class CATQConfig:
     cs_enabled: bool = False
     # Reference LR groups are scaled by the batch size (lr_factor).
     scale_lr_by_batch: bool = True
+    # Max gradient norm per window step (reference --grad_clip; None disables).
+    # Run-to-run PPL variance of the recipe is large (38.8 vs 79.2 for pure
+    # optimization-noise reseeds), motivating this stabilizer.
+    grad_clip: float | None = None
     # Window schedule: PESW over `fill_window_size` shallow layers, fixed
     # {num_layer, stride} windows in the middle, PCSW over the deep layers.
     window_size: int = 4  # num_layer in the reference
