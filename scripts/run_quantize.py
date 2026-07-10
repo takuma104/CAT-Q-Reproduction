@@ -35,6 +35,7 @@ def main() -> None:
     )
     parser.add_argument("--gamma", type=float, default=defaults.gamma)
     parser.add_argument("--s0", type=float, default=defaults.s0)
+    parser.add_argument("--grad-clip", type=float, default=defaults.grad_clip)
     parser.add_argument("--seed", type=int, default=defaults.seed)
     parser.add_argument("--lora-rank", type=int, default=defaults.lora_rank)
     parser.add_argument("--lora-lr", type=float, default=defaults.lora_lr)
@@ -60,6 +61,7 @@ def main() -> None:
         quant_rates=tuple(args.quant_rates),
         gamma=args.gamma,
         s0=args.s0,
+        grad_clip=args.grad_clip,
         seed=args.seed,
         lora_rank=args.lora_rank,
         lora_lr=args.lora_lr,

@@ -49,7 +49,14 @@ def test_build_schedule_small_fallback() -> None:
     assert {i for layers in schedule for i in layers} == {0, 1, 2}
 
 
-def test_sliding_window_end_to_end() -> None:
+def test_sliding_window_end_to_end(monkeypatch) -> None:
+    clip_max_norms: list[float] = []
+
+    def record_clip(_params, max_norm: float) -> torch.Tensor:
+        clip_max_norms.append(max_norm)
+        return torch.tensor(0.0)
+
+    monkeypatch.setattr(torch.nn.utils, "clip_grad_norm_", record_clip)
     model = build_tiny_model()
     config = CATQConfig(
         num_calib_samples=8,
@@ -59,6 +66,7 @@ def test_sliding_window_end_to_end() -> None:
         batch_size=3,
         window_size=2,
         stride=1,
+        grad_clip=0.5,
         device="cpu",
     )
     input_ids = torch.randint(0, 128, (config.num_calib_samples, config.seq_len))
@@ -68,6 +76,8 @@ def test_sliding_window_end_to_end() -> None:
 
     # 2 passes over the fallback schedule ([0,1],[1,2])
     assert len(result.windows) == 4
+    assert clip_max_norms
+    assert set(clip_max_norms) == {0.5}
     assert all(torch.isfinite(torch.tensor(w.final_loss)) for w in result.windows)
     assert result.windows[0].quant_rate == 0.5
     assert result.windows[-1].quant_rate == 1.0
