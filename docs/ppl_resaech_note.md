@@ -90,3 +90,17 @@
   仕様から外れる割に根拠が弱いため、先に既存 CLI で batch 軸を調べる。
 - batch size 4 は 512 samples を割り切り、勾配分散と端数 batch をなくす。
   batch LR scaling により epoch あたりの総更新量は概ね維持される。
+
+### 2026-07-11 E4: batch size 4 - 失敗 (30.44)
+
+- 構成: 1.7B、512 samples、seq_len 2048、batch 4、clip 0.5、LoRA rank 32、
+  epochs 80、LM lr 2e-3。既知ベストから batch size だけを変更。
+- 量子化時間: **285.1 分**。batch 3 の 310.8 分より 8.3%高速。NaN/OOM なし。
+- `uv run python scripts/run_ppl.py --models outputs/jul11-17b-b4-clip05-r32-e80-lr2`:
+  **PPL 30.44**。batch 3 の 28.75 より +1.69 悪化したため不採用。
+- pass 1 は全窓で batch 3 より高い final loss。pass 2 は窓 2〜4 で約 23〜32%、
+  深層でも約 2〜3%高く、最終窓は 276.72 対 269.08 だった。
+- linear batch LR scaling は epoch あたりの一次近似の更新量を保つが、optimizer step
+  数の減少(171→128 steps/epoch)を補えない。batch 3 を維持する。
+- 逆方向の batch 2 は 256 steps/epoch と小さい離散更新になり、epochs/ST 軌道を
+  変えずに最適化精度を上げられる可能性があるため次に検証する。
