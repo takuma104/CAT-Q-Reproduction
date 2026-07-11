@@ -4,11 +4,11 @@
 
 ## 現在の最小ppl値
 
-**38.81** - `outputs/qwen3-1.7b-catq-v3` (無変更ベースライン、seed 0)
+**28.75** - `outputs/jul9-17b-clip05-r32-e80-lr2`
+(`--grad-clip 0.5 --lora-rank 32 --epochs 80 --lr 2e-3`、seed 0)
 
-参考記録: `autoresearch/jul6` の最小値は **28.75**
-(`--grad-clip 0.5 --lora-rank 32 --epochs 80 --lr 2e-3`)。今回の実験ではまず
-この安定化機構を最小構成で移植し、28.75 未満を更新対象とする。
+`autoresearch/jul6` で生成された既知ベストだが、今回も未変更の `run_ppl.py` で
+**28.75** を再確認した。今回の新規出力に限った最小値は 29.41。
 
 ## 記録
 
@@ -36,3 +36,17 @@
 - `jul6` の成功に必要な `--grad-clip` を単独で移植する。
 - 既知ベスト近傍で未完了だった epochs 100 と clip 0.7 の結果を取り、
   epochs / learning-rate / clipping の相互作用を絞り込む。
+
+### 2026-07-11 E1: epochs 100 - 失敗 (29.41)
+
+- 構成: 1.7B、512 samples、seq_len 2048、clip 0.5、LoRA rank 32、
+  epochs 100、LM lr 2e-3。seed 0 の校正キャッシュを固定。
+- 量子化時間: **387.3 分**。全 196 linear を正常に三値化し、NaN/OOM なし。
+- `uv run python scripts/run_ppl.py --models outputs/jul10-17b-best-e100`:
+  **PPL 29.41**。既知ベスト e80=28.75 より +0.66 悪化したため不採用。
+- pass 1 は全 19 窓で e80 より低い final reconstruction loss。pass 2 も窓 5 の
+  一時的な悪化を後続で吸収し、最終窓は e100=267.08 対 e80=269.08 と低かった。
+  それでも PPL は悪化したため、**窓 MSE の低下は LM 品質の改善を保証しない**。
+- lr 1e-3/rank16 での既知結果(e80=29.38、e120=29.74)と合わせ、epoch 最適点は
+  80 付近。lr 2e-3/rank32 でも 100 への延長は過剰最適化になる。
+- コード変更なし(CLI のみ)。e80 を維持し、次は e80 固定で clip 0.7 を試す。
