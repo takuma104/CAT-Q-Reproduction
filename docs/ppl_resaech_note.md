@@ -66,3 +66,17 @@
 - 次は総更新量を再検討する。r32 の既知点(lr 1e-3/e80=29.17、
   lr 2e-3/e80=28.75、lr 2e-3/e100=29.41)を lr×epochs で二次近似すると
   頂点は lr 2e-3 で約 67 epochs。e70 を直接検証する。
+
+### 2026-07-11 E3: epochs 70 - 失敗 (29.57)
+
+- 構成: 1.7B、512 samples、seq_len 2048、clip 0.5、LoRA rank 32、
+  epochs 70、LM lr 2e-3。既知ベストから epochs だけを変更。
+- 量子化時間: **273.3 分**。NaN/OOM なし。
+- `uv run python scripts/run_ppl.py --models outputs/jul11-17b-clip05-r32-e70-lr2`:
+  **PPL 29.57**。e80 の 28.75 より +0.82 悪化したため不採用。
+- pass 1 は多くの窓で e80 より約 1%高い final loss。pass 2 では窓 5 が約 40%、
+  中層が約 3〜8%、最終窓も約 0.7%高く、hard 段階の適応不足が明確だった。
+- lr×epochs の二次近似は epochs が ST の `t` 進行も決めることを無視していた。
+  e70 は総更新量だけでなく soft/hard 各段階の step 数を同時に削るため外挿不能。
+- e70=29.57、e80=28.75、e100=29.41 より epochs 80 を維持する。
+  次は epoch 数を固定し、hard 段階の optimizer schedule を検討する。
