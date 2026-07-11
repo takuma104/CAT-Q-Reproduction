@@ -50,3 +50,19 @@
 - lr 1e-3/rank16 での既知結果(e80=29.38、e120=29.74)と合わせ、epoch 最適点は
   80 付近。lr 2e-3/rank32 でも 100 への延長は過剰最適化になる。
 - コード変更なし(CLI のみ)。e80 を維持し、次は e80 固定で clip 0.7 を試す。
+
+### 2026-07-11 E2: grad clip 0.7 - 失敗 (29.08)
+
+- 構成: 1.7B、512 samples、seq_len 2048、clip 0.7、LoRA rank 32、
+  epochs 80、LM lr 2e-3。既知ベストから clip 値だけを変更。
+- 量子化時間: **311.2 分**。NaN/OOM なし。
+- `uv run python scripts/run_ppl.py --models outputs/jul11-17b-clip07-r32-e80-lr2`:
+  **PPL 29.08**。clip 0.5 の 28.75 より +0.33 悪化したため不採用。
+- pass 1 は全 19 窓で clip 0.5 より低い final reconstruction loss。pass 2 は
+  窓 2〜3 だけ悪化し、他は概ね 0.1〜3%改善。最終窓も 268.48 対 269.08 と低い。
+  E1 と同様、**再構成 MSE の小幅改善と PPL は逆方向**になった。
+- lr 1e-3 での既知 clip sweep(0.25=31.97、0.5=31.86、1.0=32.35)に加え、
+  lr 2e-3 でも 0.7 が悪化したため、clip 0.5 を維持する。
+- 次は総更新量を再検討する。r32 の既知点(lr 1e-3/e80=29.17、
+  lr 2e-3/e80=28.75、lr 2e-3/e100=29.41)を lr×epochs で二次近似すると
+  頂点は lr 2e-3 で約 67 epochs。e70 を直接検証する。
