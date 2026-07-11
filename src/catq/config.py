@@ -22,6 +22,9 @@ class CATQConfig:
     seed: int = 0
 
     # Quantization
+    # "ternary": {-1, 0, +1} x group scale (paper). "binary": {-1, +1} x group
+    # scale (W1), the delta -> 0 limit; delta0 / rho_delta are unused.
+    quant_mode: str = "ternary"
     group_size: int = 128
     delta0: float = 0.5
     s0: float = 30.0
