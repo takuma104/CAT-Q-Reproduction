@@ -80,3 +80,13 @@
   e70 は総更新量だけでなく soft/hard 各段階の step 数を同時に削るため外挿不能。
 - e70=29.57、e80=28.75、e100=29.41 より epochs 80 を維持する。
   次は epoch 数を固定し、hard 段階の optimizer schedule を検討する。
+
+### E3 後の scheduler 再確認
+
+- CAT-Q 論文 Appendix B は AdamW + linear decay to zero を明記。
+- SliderQuant 参照実装も各 window/round で Hugging Face の linear scheduler を作り直し、
+  `max_train_steps = epochs * steps_per_epoch` で zero まで減衰する。現行実装と一致。
+- lr floor は hard 段階を助ける可能性がある一方、e100 で確認した過剰最適化を強める。
+  仕様から外れる割に根拠が弱いため、先に既存 CLI で batch 軸を調べる。
+- batch size 4 は 512 samples を割り切り、勾配分散と端数 batch をなくす。
+  batch LR scaling により epoch あたりの総更新量は概ね維持される。
