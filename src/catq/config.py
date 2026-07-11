@@ -49,7 +49,7 @@ class CATQConfig:
     # Reference LR groups are scaled by the batch size (lr_factor).
     scale_lr_by_batch: bool = True
     # Optional global-norm clipping for all parameters in the active window.
-    grad_clip: float | None = None
+    grad_clip: float | None = 0.5
     # Window schedule: PESW over `fill_window_size` shallow layers, fixed
     # {num_layer, stride} windows in the middle, PCSW over the deep layers.
     window_size: int = 4  # num_layer in the reference
