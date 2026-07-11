@@ -1,5 +1,6 @@
 """End-to-end smoke test of the sliding-window pipeline on a tiny Qwen3 model."""
 
+import pytest
 import torch
 from transformers import Qwen3Config, Qwen3ForCausalLM
 
@@ -49,7 +50,8 @@ def test_build_schedule_small_fallback() -> None:
     assert {i for layers in schedule for i in layers} == {0, 1, 2}
 
 
-def test_sliding_window_end_to_end(monkeypatch) -> None:
+@pytest.mark.parametrize("quant_mode", ["ternary", "binary"])
+def test_sliding_window_end_to_end(monkeypatch, quant_mode: str) -> None:
     clip_max_norms: list[float] = []
 
     def record_clip(_params, max_norm: float) -> torch.Tensor:
@@ -59,6 +61,7 @@ def test_sliding_window_end_to_end(monkeypatch) -> None:
     monkeypatch.setattr(torch.nn.utils, "clip_grad_norm_", record_clip)
     model = build_tiny_model()
     config = CATQConfig(
+        quant_mode=quant_mode,
         num_calib_samples=8,
         seq_len=32,
         group_size=32,
@@ -87,13 +90,17 @@ def test_sliding_window_end_to_end(monkeypatch) -> None:
     assert improved >= 1, [(w.hard_init_loss, w.final_loss) for w in final_pass]
     assert len(result.layer_stats) == 3 * 7  # 3 layers x 7 target linears
 
-    # All target linears must now hold group-wise ternary weights.
+    # All target linears must now hold group-wise ternary/binary weights.
+    max_levels = 3 if quant_mode == "ternary" else 2
     for layer in model.model.layers:
         for name in ("self_attn.q_proj", "mlp.down_proj"):
             module = layer.get_submodule(name)
             groups, mask = to_groups(module.weight, config.group_size)
             for g in range(0, groups.shape[0], 7):
-                assert torch.unique(groups[g][mask[g]]).numel() <= 3
+                values = torch.unique(groups[g][mask[g]])
+                assert values.numel() <= max_levels
+                if quant_mode == "binary":
+                    assert (values != 0).all()
 
     # The quantized model still produces finite logits.
     with torch.no_grad():
