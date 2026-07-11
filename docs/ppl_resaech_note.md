@@ -4,11 +4,10 @@
 
 ## 現在の最小ppl値
 
-**28.75** - `outputs/jul9-17b-clip05-r32-e80-lr2`
-(`--grad-clip 0.5 --lora-rank 32 --epochs 80 --lr 2e-3`、seed 0)
+**27.75** - `outputs/jul11-17b-b2-clip05-r32-e80-lr2`
+(`--batch-size 2 --grad-clip 0.5 --lora-rank 32 --epochs 80 --lr 2e-3`、seed 0)
 
-`autoresearch/jul6` で生成された既知ベストだが、今回も未変更の `run_ppl.py` で
-**28.75** を再確認した。今回の新規出力に限った最小値は 29.41。
+旧: 28.75 (batch 3) ← 29.17 (lr 1e-3) ← 29.38 (rank 16) ← 38.81 (baseline)
 
 ## 記録
 
@@ -104,3 +103,17 @@
   数の減少(171→128 steps/epoch)を補えない。batch 3 を維持する。
 - 逆方向の batch 2 は 256 steps/epoch と小さい離散更新になり、epochs/ST 軌道を
   変えずに最適化精度を上げられる可能性があるため次に検証する。
+
+### 2026-07-11 E5: batch size 2 - 成功、新記録 27.75
+
+- 構成: 1.7B、512 samples、seq_len 2048、batch 2、clip 0.5、LoRA rank 32、
+  epochs 80、LM lr 2e-3。既知ベストから batch size だけを変更。
+- 量子化時間: **373.7 分**。batch 3 の 310.8 分より約 20%低速。NaN/OOM なし。
+- `uv run python scripts/run_ppl.py --models outputs/jul11-17b-b2-clip05-r32-e80-lr2`:
+  **PPL 27.75**。旧最小 28.75 を **1.00 改善**。
+- pass 1 は窓 3 で大きな一時スパイクから回復して batch 3 比約 48%改善し、
+  以降も概ね 0〜1%低い final loss。pass 2 は全 19 窓で batch 3 より低く、
+  浅層で約 6〜12%、最終窓でも約 2.0%改善(263.59 対 269.08)。
+- batch LR scaling で一次近似の総更新量は同じでも、小さい step を多く積む方が
+  hard/full 量子化の最適化精度を上げる。batch 曲線は 4=30.44、3=28.75、
+  2=**27.75** と単調。次は batch 1 を検証する。
