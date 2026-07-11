@@ -1,10 +1,12 @@
 # CAT-Q 再現実装
 
-[CAT-Q: Cost-efficient and Accurate Ternary Quantization for LLMs](docs/papers/cat-q-paper.md) (arXiv 2606.26650) の再現実装です。事前学習済み LLM の重みを PTQ で三値 ({-1, 0, +1} × グループスケール、1.58-bit) に量子化します。
+[CAT-Q: Cost-efficient and Accurate Ternary Quantization for LLMs](docs/papers/cat-q-paper.md) (arXiv 2606.26650) の再現実装です。事前学習済み LLM の重みを PTQ で三値 ({-1, 0, +1} × グループスケール、1.58-bit) に量子化します。加えて、三値の Δ→0 極限としての二値化 ({-1, +1} × グループスケール、W1) モード(`--quant-mode binary`、論文外の新規実験)もサポートします。
 
 CAT-Q が依拠する [SliderQuant](docs/papers/slider-quant-paper.md) のフレームワーク(スライディングウィンドウ・二重ストリーム学習・LoRA 補償・イントラレイヤースライディング)は、論文と `docs/reference_impl/` の公式実装に準拠しています。
 
 ## 現在の再現状況
+
+以下は三値 (デフォルトの `--quant-mode ternary`) の結果です。二値化モードの実験結果はまだありません。
 
 Qwen3-1.7B W1.58A16、zero-shot 5 タスク(paper プロトコル: PIQA/ARC/HS=acc_norm, WG=acc):
 
@@ -22,7 +24,7 @@ Python 3.13 / uv / NVIDIA GPU(bf16 対応、0.6B〜1.7B なら 24GB 以上推奨
 
 ```bash
 uv sync
-uv run pytest   # 単体テスト 22 件
+uv run pytest   # 単体テスト 36 件
 ```
 
 モデルとキャリブレーションデータ (allenai/c4) は初回実行時に Hugging Face Hub から自動ダウンロードされます。
@@ -43,6 +45,10 @@ uv run python scripts/run_quantize.py \
 # スモークテスト (数分)
 uv run python scripts/run_quantize.py \
   --num-calib-samples 32 --epochs 4 --output-dir outputs/smoke
+
+# 二値化 (W1) モード
+uv run python scripts/run_quantize.py --quant-mode binary \
+  --output-dir outputs/qwen3-0.6b-catq-w1
 ```
 
 出力ディレクトリには fake-quant 済みモデル(`save_pretrained` 形式、そのまま `transformers` でロード可能)、トークナイザ、キャリブレーションデータのキャッシュ (`calibration_ids.pt`)、窓ごとの最適化ログ (`catq_log.json`) が保存されます。
@@ -51,9 +57,10 @@ uv run python scripts/run_quantize.py \
 
 | オプション | デフォルト | 意味 |
 | --- | --- | --- |
+| `--quant-mode` | ternary | 量子化方式(ternary={-1,0,+1} 1.58-bit / binary={-1,+1} W1。binary は Δ→0 極限で δ_Δ 因子なし) |
 | `--num-calib-samples` / `--seq-len` | 512 / 2048 | C4 キャリブレーションのサンプル数・長さ |
 | `--epochs` | 60 | 総エポック(quant_rate パス数で等分) |
-| `--group-size` | 128 | 三値化グループサイズ |
+| `--group-size` | 128 | 量子化グループサイズ |
 | `--s0` / `--gamma` | 30 / 0.8 | ST の最終シャープネス・ソフト段階比率 |
 | `--window-size` / `--stride` / `--fill-window-size` | 4 / 2 / 4 | スライディングウィンドウ設定 |
 | `--quant-rates` | 0.5 1.0 | イントラレイヤースライディングのパス |
@@ -78,8 +85,8 @@ uv run python scripts/run_ppl.py --models Qwen/Qwen3-0.6B outputs/qwen3-0.6b-cat
 ```
 src/catq/
   config.py       # CATQConfig: 全ハイパーパラメータ (論文 Table A + リファレンス W2A16 設定)
-  transition.py   # 遷移関数 f(W;s,Δ) (Eq.5)、ハード三値化 Q (Eq.2)、STE
-  ternary.py      # グループ分割 (g=128) と μ₀/α₀ 統計
+  transition.py   # 遷移関数 f(W;s,Δ) (Eq.5)、ハード三値化 Q (Eq.2)、STE + 二値化 (Δ→0 極限)
+  ternary.py      # グループ分割 (g=128) と μ₀/α₀ 統計 (方式非依存)
   module.py       # CATQLinear: LM の学習因子 δ_μ/δ_α/δ_Δ + ST + LoRA + 部分量子化
   calibration.py  # C4 からのキャリブレーションデータ生成 (シード固定・キャッシュ)
   slider.py       # スライディングウィンドウ最適化 (二重ストリーム・2パス・一括焼き込み)
@@ -103,6 +110,7 @@ outputs/          # 量子化モデル・評価結果 (git 管理外)
 
 - **LM (Learnable Modulation)**: グループごとに Ŵ=(W−μ)/α と変換(μ=μ₀+δ_μ·α₀、α=δ_α·α₀、Δ=δ_Δ·0.5)。δ の 3 因子のみ学習し、再構成は W≈αT(μ なし)。
 - **ST (Softened Ternarization)**: 時刻 t に応じ恒等写像 → 微分可能三値化 f(Ŵ; (t/γ)s₀, Δ) → ハード三値化(STE)へ遷移。t は**層の参加期間全体**(全パス×全参加窓)で単調に進み、最終窓で t=1。
+- **二値化モード** (`--quant-mode binary`、論文外): 三値の Δ→0 極限。soft は f_bin(Ŵ; s)=tanh(sŴ)/tanh(s)、hard は sign(0 は +1 に丸め)、再構成は α·B({−α,+α})。δ_Δ 因子は作らず、μ が sign の決定境界(sign(Ŵ)=sign(W̃−μ))として学習される。ST スケジュール・SliderQuant フレームワークは三値と共通。
 - **SliderQuant フレームワーク**: 拡張窓(浅層 4)→ 固定窓 {4, stride 2} → 収縮窓(深層 4)のスケジュール。FP ストリームと量子化ストリームを別々に前進させ、「量子化ストリームを入力された student が FP ストリームの教師出力を再現する」損失で蓄積誤差を補正。quant_rate {0.5→1.0} の 2 パスで全スケジュールを回し、最後に全層を一括でハード三値化して焼き込み。LoRA (r=4) は量子化前の重みに吸収される補償項。
 
 ## 論文から読み取れず解釈・実証した主な点

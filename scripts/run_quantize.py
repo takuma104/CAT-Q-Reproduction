@@ -18,9 +18,12 @@ from catq.quantize import quantize_model
 
 def main() -> None:
     defaults = CATQConfig()
-    parser = argparse.ArgumentParser(description="CAT-Q ternary quantization")
+    parser = argparse.ArgumentParser(description="CAT-Q ternary/binary quantization")
     parser.add_argument("--model-name", type=str, default=defaults.model_name)
     parser.add_argument("--output-dir", type=str, default=defaults.output_dir)
+    parser.add_argument(
+        "--quant-mode", choices=["ternary", "binary"], default=defaults.quant_mode
+    )
     parser.add_argument("--num-calib-samples", type=int, default=defaults.num_calib_samples)
     parser.add_argument("--seq-len", type=int, default=defaults.seq_len)
     parser.add_argument("--epochs", type=int, default=defaults.epochs)
@@ -49,6 +52,7 @@ def main() -> None:
     config = CATQConfig(
         model_name=args.model_name,
         output_dir=args.output_dir,
+        quant_mode=args.quant_mode,
         num_calib_samples=args.num_calib_samples,
         seq_len=args.seq_len,
         epochs=args.epochs,
