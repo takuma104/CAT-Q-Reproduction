@@ -6,9 +6,7 @@ CAT-Q が依拠する [SliderQuant](docs/papers/slider-quant-paper.md) のフレ
 
 ## 現在の再現状況
 
-以下は三値 (デフォルトの `--quant-mode ternary`) の結果です。二値化モードの実験結果はまだありません。
-
-Qwen3-1.7B W1.58A16、zero-shot 5 タスク(paper プロトコル: PIQA/ARC/HS=acc_norm, WG=acc):
+Qwen3-1.7B W1.58A16(三値、デフォルトの `--quant-mode ternary`)、zero-shot 5 タスク(paper プロトコル: PIQA/ARC/HS=acc_norm, WG=acc):
 
 | Model | PIQA | ARC-e | ARC-c | HS | WG | Avg | C4-val PPL |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -17,6 +15,18 @@ Qwen3-1.7B W1.58A16、zero-shot 5 タスク(paper プロトコル: PIQA/ARC/HS=a
 | + CAT-Q(本実装 v3) | 61.97 | 41.33 | 24.83 | 36.92 | 52.01 | **43.41** | 38.8 |
 
 FP 評価は論文 Table 1 と一致(61.46 vs 61.42)。CAT-Q は **部分的再現(ギャップ −7.6pt)** で、経緯・診断・残ギャップの仮説は [docs/reproduction-report.md](docs/reproduction-report.md) を参照してください。量子化時間は RTX 5090 ×1 で 0.6B 約 104 分、1.7B 約 234 分です。
+
+### 二値化 (W1) 追加実験
+
+Qwen3-0.6B W1A16(論文外の新規実験、三値と同一設定・同一プロトコル):
+
+| Model | PIQA | ARC-e | ARC-c | HS | WG | Avg | C4-val PPL |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Qwen3-0.6B FP | 67.30 | 56.02 | 34.30 | 47.31 | 56.51 | **52.29** | 21.97 |
+| + CAT-Q 三値 (v3、参考) | - | - | - | - | - | **37.07** | 87.6 |
+| + CAT-Q 二値 (W1) | 56.26 | 31.19 | 21.76 | 27.23 | 50.91 | **37.47** | 111.6 |
+
+PPL は三値より悪化(0 レベルの表現力の寄与)する一方、0.6B の MC 精度はどちらもランダム近傍(35.0)で頭打ちのため同水準です。量子化時間は 0.6B 約 91 分。所見の詳細は [docs/reproduction-report.md](docs/reproduction-report.md) の「追加実験: 二値化 (W1) モード」を参照してください。
 
 ## セットアップ
 
