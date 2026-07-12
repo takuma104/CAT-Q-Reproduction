@@ -4,10 +4,10 @@
 
 ## 現在の最小ppl値
 
-**27.75** - `outputs/jul11-17b-b2-clip05-r32-e80-lr2`
-(`--batch-size 2 --grad-clip 0.5 --lora-rank 32 --epochs 80 --lr 2e-3`、seed 0)
+**27.41** - `outputs/jul11-17b-b1-clip05-r32-e80-lr2`
+(`--batch-size 1 --grad-clip 0.5 --lora-rank 32 --epochs 80 --lr 2e-3`、seed 0)
 
-旧: 28.75 (batch 3) ← 29.17 (lr 1e-3) ← 29.38 (rank 16) ← 38.81 (baseline)
+旧: 27.75 (batch 2) ← 28.75 (batch 3) ← 29.17 (lr 1e-3) ← 38.81 (baseline)
 
 ## 記録
 
@@ -117,3 +117,19 @@
 - batch LR scaling で一次近似の総更新量は同じでも、小さい step を多く積む方が
   hard/full 量子化の最適化精度を上げる。batch 曲線は 4=30.44、3=28.75、
   2=**27.75** と単調。次は batch 1 を検証する。
+
+### 2026-07-12 E6: batch size 1 - 成功、新記録 27.41
+
+- 構成: 1.7B、512 samples、seq_len 2048、batch 1、clip 0.5、LoRA rank 32、
+  epochs 80、LM lr 2e-3。E5 から batch size だけを変更。
+- 量子化時間: **564.3 分**。batch 2 の 373.7 分より約 51%低速。NaN/OOM なし。
+- `uv run python scripts/run_ppl.py --models outputs/jul11-17b-b1-clip05-r32-e80-lr2`:
+  **PPL 27.41**。旧最小 27.75 を **0.34 改善**。
+- pass 1 は全窓で batch 2 より低く、浅層は最大約 41%改善。pass 2 は窓 1〜8
+  で最大約 10%改善したが、窓 9 以降は逆に約 0.4〜2.5%悪化し、最終窓も
+  267.70 対 263.59 と高かった。それでも PPL は改善した。
+- **浅層の補正品質が PPL を強く支配**する可能性。またしても最終/平均 window MSE
+  だけではモデルを選べない。batch 曲線は 4=30.44、3=28.75、2=27.75、
+  1=**27.41** と単調だが利得は逓減し、batch 1 が下限。
+- batch 1 は単一サンプル勾配の分散が大きく、同じ clip 0.5 でも batch 3 より
+  clipping 頻度が高いはず。深層の未収束を改善できるか clip 0.7 を次に試す。
