@@ -133,3 +133,18 @@
   1=**27.41** と単調だが利得は逓減し、batch 1 が下限。
 - batch 1 は単一サンプル勾配の分散が大きく、同じ clip 0.5 でも batch 3 より
   clipping 頻度が高いはず。深層の未収束を改善できるか clip 0.7 を次に試す。
+
+### 2026-07-12 E7: batch 1 + grad clip 0.7 - 失敗 (27.56)
+
+- 構成: 1.7B、512 samples、seq_len 2048、batch 1、clip 0.7、LoRA rank 32、
+  epochs 80、LM lr 2e-3。新ベストから clip 値だけを変更。
+- 量子化時間: **563.3 分**。NaN/OOM なし。
+- `uv run python scripts/run_ppl.py --models outputs/jul12-17b-b1-clip07-r32-e80-lr2`:
+  **PPL 27.56**。clip 0.5 の 27.41 より +0.15 悪化したため不採用。
+- pass 1 の窓 1〜4 は一部改善したが、その後は clip 0.5 より約 0.1〜0.3%高い
+  平行軌道。pass 2 の窓 4 で最終 epoch のスパイクにより約 9 倍悪化し、後続で
+  再補正したものの以降も約 0.1〜1%高かった。
+- batch 1 でも clip 0.5 を維持する。batch 1/2 比較では pass 1 は batch 1 が
+  全窓で優位、pass 2 は浅層で batch 1、窓 9 以降で batch 2 が優位だった。
+- 次は pass ごとの batch size を一般設定として追加し、partial/soft pass は 1、
+  full/hard pass は 2 とするハイブリッドで両者の長所を組み合わせる。
