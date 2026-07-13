@@ -5,8 +5,10 @@
 
 ## 現在の最小ppl値
 
-**87.15** — `outputs/qwen3-1.7b-catq-w1`(ベースライン: デフォルト設定 512×60、
-batch 3、lr 1e-3、LoRA rank 4、grad_clip 0.5、seed 0)
+**70.12** — `outputs/jul14-17b-bin-r32-e80-lr2`
+(`--lora-rank 32 --epochs 80 --lr 2e-3`、clip 0.5・batch 3・seed 0)
+
+旧: 87.15 (ベースライン: デフォルト設定 512×60、batch 3、lr 1e-3、rank 4)
 
 ## 参考: ternary 実験 (autoresearch/jul6, jul10) からの引き継ぎ知見
 
@@ -66,3 +68,19 @@ ternary で実証済みのレシピをまず binary に転移する(B1)。効け
      0 近傍以外飽和 → soft 段階を延ばす γ 0.9 は ternary 未探索の方向
 - α₀ init は mean|W−μ| で、μ=0 なら binary の MSE 最適スケール(XNOR-Net の α*=E|w|)
   と一致 — δ_α init 1 は既に良い初期値
+
+### 2026-07-14 B1: ternary ベストレシピ転移 → ★成功、新記録 70.12(−17.03)
+
+- 構成: 1.7B binary、512×2048、batch 3、clip 0.5、LoRA rank 32、epochs 80、
+  LM lr 2e-3(ベースラインからの変更は rank 4→32、e60→80、lr 1e-3→2e-3)。
+- 量子化時間: **283.6 分**(ternary 同構成 310.8 分より 8.7% 高速)。NaN/OOM なし。
+- `run_ppl.py`: **PPL 70.12**。ベースライン 87.15 から **−17.03(−19.5%)**。
+- **ternary で確立した「クリップ下の容量+更新量レシピ」は binary にそのまま転移する**。
+  改善率は ternary の同レシピ(38.81→28.75、−26%)よりやや小さいが同方向。
+- コード変更なし(CLI のみ)。次: B2(batch 1、ternary では単調改善で最終 −1.34)。
+
+### 2026-07-14 B2 起動: batch 1
+
+- B1 から batch size のみ変更(3→1)。ternary の batch 曲線は 4=30.44、3=28.75、
+  2=27.75、1=27.41 と単調。binary でも同傾向を仮定し中間の batch 2 は飛ばす。
+- 予想時間: ternary batch1 の 564.3 分 × 0.91 ≈ **515 分(~8.6h)**。
