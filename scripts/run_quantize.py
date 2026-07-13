@@ -25,7 +25,6 @@ def main() -> None:
     parser.add_argument("--seq-len", type=int, default=defaults.seq_len)
     parser.add_argument("--epochs", type=int, default=defaults.epochs)
     parser.add_argument("--batch-size", type=int, default=defaults.batch_size)
-    parser.add_argument("--pass-batch-sizes", type=int, nargs="+", default=None)
     parser.add_argument("--lr", type=float, default=defaults.lr)
     parser.add_argument("--group-size", type=int, default=defaults.group_size)
     parser.add_argument("--window-size", type=int, default=defaults.window_size)
@@ -54,9 +53,6 @@ def main() -> None:
         seq_len=args.seq_len,
         epochs=args.epochs,
         batch_size=args.batch_size,
-        pass_batch_sizes=(
-            tuple(args.pass_batch_sizes) if args.pass_batch_sizes is not None else None
-        ),
         lr=args.lr,
         group_size=args.group_size,
         window_size=args.window_size,

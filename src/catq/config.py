@@ -29,8 +29,6 @@ class CATQConfig:
 
     # Optimization
     batch_size: int = 3
-    # Optional batch size for each quant-rate pass. None reuses `batch_size`.
-    pass_batch_sizes: tuple[int, ...] | None = None
     epochs: int = 60
     lr: float = 1e-3
     # "mse": plain L2 on window outputs (Eq. 7). "token_rms": L2 after
