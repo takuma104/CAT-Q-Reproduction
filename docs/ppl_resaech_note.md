@@ -148,3 +148,18 @@
   全窓で優位、pass 2 は浅層で batch 1、窓 9 以降で batch 2 が優位だった。
 - 次は pass ごとの batch size を一般設定として追加し、partial/soft pass は 1、
   full/hard pass は 2 とするハイブリッドで両者の長所を組み合わせる。
+
+### 2026-07-13 E8: pass 別 batch 1/2 - 失敗 (28.10)
+
+- 構成: 1.7B、512 samples、seq_len 2048、pass 1 は batch 1、pass 2 は
+  batch 2、clip 0.5、LoRA rank 32、epochs 80、LM lr 2e-3。
+- 量子化時間: **469.3 分**。batch 1 固定の 564.3 分より約 17%高速。NaN/OOM なし。
+- `uv run python scripts/run_ppl.py --models outputs/jul12-17b-passb1-2-clip05-r32-e80-lr2`:
+  **PPL 28.10**。batch 1 固定の 27.41 より +0.69、batch 2 固定の 27.75 より
+  +0.35 悪化したため不採用。pass 別 batch 設定のコードは取り消した。
+- pass 2 の窓 3〜8 は batch 1 固定、batch 2 固定の双方より高い loss になった一方、
+  窓 9 では 1.2048、最終窓では 262.83 まで改善した。最終窓は既存 2 構成より
+  最良でも PPL は最悪であり、深層 loss の改善だけを狙う切替は有効でない。
+- pass 1 の状態と pass 2 の optimizer 軌道には相互作用があり、pass 単位の粗い切替で
+  独立実験の長所を単純に合成できない。浅層を batch 1 のまま学習し、batch 1 が
+  batch 2 に劣り始めた pass 2 の窓 9 からだけ batch 2 に切り替える案を次に検証する。
