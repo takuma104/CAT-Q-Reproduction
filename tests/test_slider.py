@@ -64,6 +64,7 @@ def test_sliding_window_end_to_end(monkeypatch) -> None:
         group_size=32,
         epochs=8,  # 4 per pass
         batch_size=3,
+        batch_size_switch=(2, 2, 2),
         window_size=2,
         stride=1,
         grad_clip=0.5,
@@ -81,6 +82,7 @@ def test_sliding_window_end_to_end(monkeypatch) -> None:
     assert all(torch.isfinite(torch.tensor(w.final_loss)) for w in result.windows)
     assert result.windows[0].quant_rate == 0.5
     assert result.windows[-1].quant_rate == 1.0
+    assert [w.batch_size for w in result.windows] == [3, 3, 3, 2]
     # Learned factors should beat the un-optimized hard baseline in the final pass.
     final_pass = [w for w in result.windows if w.pass_index == 1]
     improved = sum(w.final_loss <= w.hard_init_loss for w in final_pass)

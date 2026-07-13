@@ -48,6 +48,9 @@ class CATQConfig:
     cs_enabled: bool = False
     # Reference LR groups are scaled by the batch size (lr_factor).
     scale_lr_by_batch: bool = True
+    # Optional 1-based (pass, window, batch size) switch. The new batch size
+    # applies from that window through the remaining passes.
+    batch_size_switch: tuple[int, int, int] | None = None
     # Optional global-norm clipping for all parameters in the active window.
     grad_clip: float | None = None
     # Window schedule: PESW over `fill_window_size` shallow layers, fixed

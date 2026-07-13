@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 class WindowLog:
     pass_index: int
     quant_rate: float
+    batch_size: int
     window_start: int
     layers: list[int]
     hard_init_loss: float
@@ -116,6 +117,7 @@ class SlidingWindowQuantizer:
         self.layers: nn.ModuleList = model.model.layers
         self.device = torch.device(config.device)
         self.dtype = model.dtype
+        self._active_batch_size = config.batch_size
         # layer_idx -> {module_name: CATQLinear}
         self.wrapped: dict[int, dict[str, CATQLinear]] = {}
 
@@ -133,8 +135,8 @@ class SlidingWindowQuantizer:
             (input_ids.shape[0], input_ids.shape[1], self.model.config.hidden_size),
             dtype=self.dtype, device=self.device,
         )
-        for i in range(0, input_ids.shape[0], self.config.batch_size):
-            ids = input_ids[i : i + self.config.batch_size].to(self.device)
+        for i in range(0, input_ids.shape[0], self._active_batch_size):
+            ids = input_ids[i : i + self._active_batch_size].to(self.device)
             hidden[i : i + ids.shape[0]] = embed(ids)
 
         position_ids = torch.arange(input_ids.shape[1], device=self.device).unsqueeze(0)
@@ -171,7 +173,7 @@ class SlidingWindowQuantizer:
 
     def _window_params(self, layer_indices: list[int]) -> list[dict[str, object]]:
         cfg = self.config
-        lr_factor = cfg.batch_size if cfg.scale_lr_by_batch else 1
+        lr_factor = self._active_batch_size if cfg.scale_lr_by_batch else 1
         factors: list[nn.Parameter] = []
         lora: list[nn.Parameter] = []
         for idx in layer_indices:
@@ -219,8 +221,8 @@ class SlidingWindowQuantizer:
         if fp_mode:
             self._set_fp_mode(layer_indices, True)
         out = hidden if inplace else torch.empty_like(hidden)
-        for i in range(0, hidden.shape[0], self.config.batch_size):
-            batch = hidden[i : i + self.config.batch_size]
+        for i in range(0, hidden.shape[0], self._active_batch_size):
+            batch = hidden[i : i + self._active_batch_size]
             out[i : i + batch.shape[0]] = self._forward_window(
                 layer_indices, batch, position_embeddings
             )
@@ -242,8 +244,8 @@ class SlidingWindowQuantizer:
             for m, _ in saved:
                 m.t = t
         total = 0.0
-        for i in range(0, hidden.shape[0], self.config.batch_size):
-            batch = hidden[i : i + self.config.batch_size]
+        for i in range(0, hidden.shape[0], self._active_batch_size):
+            batch = hidden[i : i + self._active_batch_size]
             out = self._forward_window(layer_indices, batch, position_embeddings)
             total += window_loss_fn(
                 out, target[i : i + batch.shape[0]], self.config.loss
@@ -263,6 +265,17 @@ class SlidingWindowQuantizer:
         num_samples = input_ids.shape[0]
         logs: list[WindowLog] = []
 
+        if cfg.batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if cfg.batch_size_switch is not None:
+            switch_pass, switch_window, switch_size = cfg.batch_size_switch
+            if not 1 <= switch_pass <= num_passes:
+                raise ValueError("batch size switch pass is out of range")
+            if not 1 <= switch_window <= len(schedule):
+                raise ValueError("batch size switch window is out of range")
+            if switch_size <= 0:
+                raise ValueError("batch size switch value must be positive")
+
         # Lifetime ST schedule: t advances across all windows (in all passes)
         # containing the layer and reaches 1.0 in its final window.
         windows_per_layer = {
@@ -280,6 +293,11 @@ class SlidingWindowQuantizer:
                 m.set_quant_rate(quant_rate)
 
             for w, layer_indices in enumerate(schedule):
+                self._active_batch_size = cfg.batch_size
+                if cfg.batch_size_switch is not None:
+                    switch_pass, switch_window, switch_size = cfg.batch_size_switch
+                    if (pass_index + 1, w + 1) >= (switch_pass, switch_window):
+                        self._active_batch_size = switch_size
                 for idx in layer_indices:
                     self._wrap_layer(idx)
                     for m in self.wrapped[idx].values():
@@ -298,7 +316,9 @@ class SlidingWindowQuantizer:
                     param for group in param_groups for param in group["params"]
                 ]
                 optimizer = torch.optim.AdamW(param_groups)
-                steps_per_epoch = (num_samples + cfg.batch_size - 1) // cfg.batch_size
+                steps_per_epoch = (
+                    num_samples + self._active_batch_size - 1
+                ) // self._active_batch_size
                 total_steps = pass_epochs * steps_per_epoch
                 scheduler = torch.optim.lr_scheduler.LambdaLR(
                     optimizer, lambda step: 1.0 - step / total_steps
@@ -313,8 +333,8 @@ class SlidingWindowQuantizer:
                             module.t = t
                     perm = torch.randperm(num_samples, generator=generator)
                     epoch_loss = 0.0
-                    for i in range(0, num_samples, cfg.batch_size):
-                        idx_batch = perm[i : i + cfg.batch_size]
+                    for i in range(0, num_samples, self._active_batch_size):
+                        idx_batch = perm[i : i + self._active_batch_size]
                         out = self._forward_window(
                             layer_indices, hidden_q[idx_batch], position_embeddings
                         )
@@ -357,6 +377,7 @@ class SlidingWindowQuantizer:
                     WindowLog(
                         pass_index=pass_index,
                         quant_rate=quant_rate,
+                        batch_size=self._active_batch_size,
                         window_start=layer_indices[0],
                         layers=layer_indices,
                         hard_init_loss=hard_init_loss,
