@@ -4,10 +4,12 @@
 
 ## 現在の最小ppl値
 
-**27.41** - `outputs/jul11-17b-b1-clip05-r32-e80-lr2`
-(`--batch-size 1 --grad-clip 0.5 --lora-rank 32 --epochs 80 --lr 2e-3`、seed 0)
+**27.37** - `outputs/jul13-17b-b1-p2w9b2-clip05-r32-e80-lr2`
+(`--batch-size 1 --batch-size-switch 2 9 2 --grad-clip 0.5 --lora-rank 32
+--epochs 80 --lr 2e-3`、seed 0)
 
-旧: 27.75 (batch 2) ← 28.75 (batch 3) ← 29.17 (lr 1e-3) ← 38.81 (baseline)
+旧: 27.41 (batch 1) ← 27.75 (batch 2) ← 28.75 (batch 3) ← 29.17 (lr 1e-3)
+← 38.81 (baseline)
 
 ## 記録
 
@@ -163,3 +165,21 @@
 - pass 1 の状態と pass 2 の optimizer 軌道には相互作用があり、pass 単位の粗い切替で
   独立実験の長所を単純に合成できない。浅層を batch 1 のまま学習し、batch 1 が
   batch 2 に劣り始めた pass 2 の窓 9 からだけ batch 2 に切り替える案を次に検証する。
+
+### 2026-07-13 E9: pass 2 window 9 から batch 2 - 成功、新記録 27.37
+
+- 構成: 1.7B、512 samples、seq_len 2048、pass 1 と pass 2 の窓 1〜8 は
+  batch 1、pass 2 の窓 9〜19 は batch 2。clip 0.5、LoRA rank 32、epochs 80、
+  LM lr 2e-3。`--batch-size-switch 2 9 2` を使用。
+- 量子化時間: **507.7 分**。batch 1 固定の 564.3 分より 56.6 分（約 10%）高速。
+  NaN/OOM なし。
+- `uv run python scripts/run_ppl.py --models outputs/jul13-17b-b1-p2w9b2-clip05-r32-e80-lr2`:
+  **PPL 27.37**。旧最小 27.41 を **0.04 改善**。保存済み HF 認証情報に紐づく
+  Xet URL が一時的に 403 となったため、評価時だけ `HF_HUB_DISABLE_IMPLICIT_TOKEN=1`
+  で公開 C4 shard を取得した。評価コード・データ・引数は不変。
+- 切替前の pass 2 窓 1〜8 は batch 1 固定をほぼ再現し、窓 4 は 0.05715、窓 8 は
+  0.71191。切替後は窓 9 の 1.19044 から最終窓の 262.01 まで、全 11 窓で E8 より
+  低い final loss。浅層を batch 1 で補正してから深層だけ batch 2 にする順序が重要。
+- PPL 改善は 0.04 と小さいが、品質と速度を同時に改善しており追加設定も単一の
+  汎用 switch のため採用する。次は切替を窓 10 に一つ遅らせ、PPL を強く支配する
+  浅中層を batch 1 に残す方が final loss の小幅改善より有効かを検証する。
