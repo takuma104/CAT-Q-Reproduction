@@ -9,7 +9,12 @@ contributes two learnable compensation mechanisms per linear layer:
 CAT-Q's learnable modulation factors per weight group of W_tilde (Eq. 3):
   - delta_mu in (-1, 1), parametrized as tanh(rho_mu), init 0
   - delta_alpha > 0, parametrized as softplus(rho_alpha), init 1
-  - delta_delta > 0, parametrized as softplus(rho_delta), init 1
+  - delta_delta > 0, parametrized as softplus(rho_delta), init 1 (ternary only)
+
+quant_mode selects the level set: "ternary" ({-1, 0, +1}, paper) or "binary"
+({-1, +1}, W1, the delta -> 0 limit). Binary has no threshold, so rho_delta
+is not created; mu acts as the learnable sign decision boundary because
+sign((W - mu) / alpha) = sign(W - mu). Both modes reconstruct alpha * code.
 
 Group statistics (mu0, alpha0) are recomputed from the current W_tilde and
 detached, so the CS/LoRA drift is tracked without a second gradient path.
@@ -25,7 +30,14 @@ import torch.nn.functional as F
 from torch import nn
 
 from catq.ternary import from_groups, group_stats, to_groups
-from catq.transition import hard_ternarize, hard_ternarize_ste, smooth_transition
+from catq.transition import (
+    hard_binarize,
+    hard_binarize_ste,
+    hard_ternarize,
+    hard_ternarize_ste,
+    smooth_binarize,
+    smooth_transition,
+)
 
 # softplus(x) = 1  <=>  x = log(e - 1)
 _SOFTPLUS_INV_ONE = math.log(math.e - 1.0)
@@ -43,8 +55,12 @@ class CATQLinear(nn.Module):
         gamma: float = 0.8,
         lora_rank: int = 4,
         cs_enabled: bool = True,
+        quant_mode: str = "ternary",
     ) -> None:
         super().__init__()
+        if quant_mode not in ("ternary", "binary"):
+            raise ValueError(f"unknown quant_mode: {quant_mode!r}")
+        self.quant_mode = quant_mode
         self.group_size = group_size
         self.delta0 = delta0
         self.s0 = s0
@@ -75,7 +91,12 @@ class CATQLinear(nn.Module):
             self.register_buffer("mask", mask)
         self.rho_mu = nn.Parameter(torch.zeros(n_groups, 1))
         self.rho_alpha = nn.Parameter(torch.full((n_groups, 1), _SOFTPLUS_INV_ONE))
-        self.rho_delta = nn.Parameter(torch.full((n_groups, 1), _SOFTPLUS_INV_ONE))
+        # Binary has no threshold Delta, so the factor is not created at all.
+        self.rho_delta: nn.Parameter | None = (
+            nn.Parameter(torch.full((n_groups, 1), _SOFTPLUS_INV_ONE))
+            if quant_mode == "ternary"
+            else None
+        )
 
         # SliderQuant channel-wise scaling: per input channel, init 1.
         self.cs_enabled = cs_enabled
@@ -110,6 +131,7 @@ class CATQLinear(nn.Module):
 
     @property
     def delta_delta(self) -> torch.Tensor:
+        assert self.rho_delta is not None, "delta_delta is ternary-only"
         return F.softplus(self.rho_delta).clamp_min(1e-6)
 
     def set_quant_rate(self, rate: float) -> None:
@@ -144,14 +166,20 @@ class CATQLinear(nn.Module):
             w = w + self.lora_B @ self.lora_A
         return w
 
-    def _modulated(self, w_tilde: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Returns (w_hat, alpha, delta) per Eq. 3 with Delta = delta_delta * Delta0."""
+    def _modulated(
+        self, w_tilde: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        """Returns (w_hat, alpha, delta) per Eq. 3 with Delta = delta_delta * Delta0.
+
+        The mu/alpha modulation is shared by both modes; binary has no
+        threshold, so delta is None there.
+        """
         w_groups, _ = to_groups(w_tilde, self.group_size)
         mu0, alpha0 = group_stats(w_groups.detach(), self.mask)
         mu = mu0 + self.delta_mu * alpha0
         alpha = self.delta_alpha * alpha0
         w_hat = (w_groups - mu) / alpha
-        delta = self.delta_delta * self.delta0
+        delta = self.delta_delta * self.delta0 if self.quant_mode == "ternary" else None
         return w_hat, alpha, delta
 
     def effective_weight(self) -> torch.Tensor:
@@ -163,10 +191,16 @@ class CATQLinear(nn.Module):
             w_hat, alpha, delta = self._modulated(w_tilde)
             if self.t <= self.gamma:
                 s = (self.t / self.gamma) * self.s0
-                ternary = smooth_transition(w_hat, s, delta)
+                if delta is None:
+                    code = smooth_binarize(w_hat, s)
+                else:
+                    code = smooth_transition(w_hat, s, delta)
             else:
-                ternary = hard_ternarize_ste(w_hat, delta, self.s0)
-            wq_groups = alpha * ternary
+                if delta is None:
+                    code = hard_binarize_ste(w_hat, self.s0)
+                else:
+                    code = hard_ternarize_ste(w_hat, delta, self.s0)
+            wq_groups = alpha * code
             if self.quant_mask is not None:
                 w_tilde_groups, _ = to_groups(w_tilde, self.group_size)
                 wq_groups = torch.where(self.quant_mask, wq_groups, w_tilde_groups)
@@ -183,16 +217,17 @@ class CATQLinear(nn.Module):
 
     @torch.no_grad()
     def finalize(self) -> tuple[nn.Linear, dict[str, float]]:
-        """Bake hard-ternarized fake-quant weights into a plain nn.Linear.
+        """Bake hard-quantized fake-quant weights into a plain nn.Linear.
 
-        The ternary weight is alpha * T over W_tilde groups. The channel scale
-        is folded back into the weight (equivalent math; at deployment it would
-        be absorbed into the preceding op instead, keeping W purely ternary).
+        The quantized weight is alpha * code over W_tilde groups. The channel
+        scale is folded back into the weight (equivalent math; at deployment
+        it would be absorbed into the preceding op instead, keeping W purely
+        ternary/binary).
         """
         w_tilde = self._weight_tilde()
         w_hat, alpha, delta = self._modulated(w_tilde)
-        ternary = hard_ternarize(w_hat, delta)
-        wq = from_groups(alpha * ternary, self.weight_shape)
+        code = hard_binarize(w_hat) if delta is None else hard_ternarize(w_hat, delta)
+        wq = from_groups(alpha * code, self.weight_shape)
         cs = self._cs()
         weight = (wq / cs if cs is not None else wq).to(self.compute_dtype)
 
@@ -204,9 +239,10 @@ class CATQLinear(nn.Module):
         if self.bias is not None:
             linear.bias.copy_(self.bias)
 
-        valid_ternary = ternary if self.mask is None else ternary[self.mask]
+        valid_code = code if self.mask is None else code[self.mask]
         stats = {
-            "zero_fraction": float((valid_ternary == 0).float().mean()),
-            "recon_error": float((from_groups(alpha * ternary - to_groups(w_tilde, self.group_size)[0], self.weight_shape) ** 2).sum()),
+            "zero_fraction": float((valid_code == 0).float().mean()),
+            "positive_fraction": float((valid_code > 0).float().mean()),
+            "recon_error": float((from_groups(alpha * code - to_groups(w_tilde, self.group_size)[0], self.weight_shape) ** 2).sum()),
         }
         return linear, stats

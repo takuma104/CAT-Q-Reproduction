@@ -1,8 +1,9 @@
-"""Sliding-layer ternarization: CAT-Q quantizer on the SliderQuant framework.
+"""Sliding-layer quantization: CAT-Q quantizer on the SliderQuant framework.
 
 Mechanics follow the SliderQuant reference implementation
 (docs/reference_impl/SliderQuant, W2A16 config) with CAT-Q's LM+ST quantizer
-replacing the uniform LWC quantizer:
+(ternary or binary, per config.quant_mode) replacing the uniform LWC
+quantizer:
 
   - Window schedule: progressive expansion over the first `fill_window_size`
     layers ([0], [0,1], ...), fixed {window_size, stride} windows over the
@@ -17,7 +18,7 @@ replacing the uniform LWC quantizer:
     channels), with `epochs` split evenly across the passes. Streams reset to
     the embeddings at the start of each pass.
   - Layers are never finalized mid-run; every CATQLinear stays live (warm
-    parameters) and all layers are hard-ternarized and baked at the end.
+    parameters) and all layers are hard-quantized and baked at the end.
   - No channel scaling for weight-only quantization (reference uses
     quant_mode=lora_only with scale_lr=0 for W2A16), and LR groups are scaled
     by the batch size (reference `lr_factor`).
@@ -155,6 +156,7 @@ class SlidingWindowQuantizer:
                 gamma=cfg.gamma,
                 lora_rank=cfg.lora_rank,
                 cs_enabled=cfg.cs_enabled,
+                quant_mode=cfg.quant_mode,
             ).to(self.device)
             _set_submodule(self.layers[idx], name, module)
             wrapped[name] = module
@@ -176,7 +178,9 @@ class SlidingWindowQuantizer:
         lora: list[nn.Parameter] = []
         for idx in layer_indices:
             for m in self.wrapped[idx].values():
-                factors += [m.rho_mu, m.rho_alpha, m.rho_delta]
+                factors += [m.rho_mu, m.rho_alpha]
+                if m.rho_delta is not None:
+                    factors.append(m.rho_delta)
                 if m.cs_scale is not None:
                     factors.append(m.cs_scale)
                 if m.lora_A is not None:
@@ -372,7 +376,7 @@ class SlidingWindowQuantizer:
             del hidden_q, hidden_fp
             torch.cuda.empty_cache()
 
-        # Bake: hard-ternarize every wrapped linear with its final parameters.
+        # Bake: hard-quantize every wrapped linear with its final parameters.
         layer_stats: dict[str, dict[str, float]] = {}
         for idx in sorted(self.wrapped):
             assert done_epochs[idx] == total_epochs[idx]
@@ -381,5 +385,5 @@ class SlidingWindowQuantizer:
                 _set_submodule(self.layers[idx], name, linear)
                 layer_stats[f"layer{idx}.{name}"] = stats
         self.wrapped.clear()
-        logger.info("baked %d ternary linears", len(layer_stats))
+        logger.info("baked %d %s linears", len(layer_stats), self.config.quant_mode)
         return RunResult(windows=logs, layer_stats=layer_stats)

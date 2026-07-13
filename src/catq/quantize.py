@@ -54,10 +54,12 @@ def quantize_model(config: CATQConfig) -> Path:
     tokenizer.save_pretrained(output_dir)
 
     zero_fractions = [stats["zero_fraction"] for stats in result.layer_stats.values()]
+    positive_fractions = [stats["positive_fraction"] for stats in result.layer_stats.values()]
     report = {
         "config": dataclasses.asdict(config),
         "elapsed_sec": elapsed,
         "mean_zero_fraction": sum(zero_fractions) / len(zero_fractions),
+        "mean_positive_fraction": sum(positive_fractions) / len(positive_fractions),
         "windows": [dataclasses.asdict(log) for log in result.windows],
         "layer_stats": result.layer_stats,
     }
