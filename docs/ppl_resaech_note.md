@@ -219,3 +219,16 @@
 - LoRA rank は e80/clip0.5 で r16=29.38、r32=29.17、r64=31.59。16→32 の利得は
   小さい一方、64 で容量過多になるため、未検証の rank 24 が曲線の谷を狙える。
 - 次は E9 の window 9 switch を固定し、LoRA rank だけを 32 から 24 に変更する。
+
+### 2026-07-14 E12: LoRA rank 24 - 失敗 (27.69)
+
+- 構成: E9 の pass 2 window 9 switch、batch 1/2、clip 0.5、epochs 80、
+  LM lr 2e-3 を固定し、LoRA rank だけを 32 から 24 に変更。同じ校正テンソルを使用。
+- 量子化時間: **505.9 分**。E9 とほぼ同じ。NaN/OOM なし。
+- `uv run python scripts/run_ppl.py --models outputs/jul14-17b-b1-p2w9b2-clip05-r24-e80-lr2`:
+  **PPL 27.69**。最小 27.37 より +0.32 のため不採用。コード変更なし。
+- pass 1 は窓 2 以降の全窓で rank 32 より高い final loss。差は中深層で約 7〜9%。
+  pass 2 でも浅層から約 3〜7%高く、最終窓は 272.74 対 262.01（約 4.1%悪化）。
+  rank 24 は明確な容量不足で、rank 32 を維持する。
+- clip、lr、rank、epochs、batch switch の近傍は一通り絞れたため、次は未探索の
+  window schedule と CAT-Q / SliderQuant 参照実装との差分を再点検する。
