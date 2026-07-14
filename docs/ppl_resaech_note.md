@@ -5,10 +5,10 @@
 
 ## 現在の最小ppl値
 
-**70.12** — `outputs/jul14-17b-bin-r32-e80-lr2`
-(`--lora-rank 32 --epochs 80 --lr 2e-3`、clip 0.5・batch 3・seed 0)
+**52.21** — `outputs/jul14-17b-bin-b1-r32-e80-lr2`
+(`--batch-size 1 --lora-rank 32 --epochs 80 --lr 2e-3`、clip 0.5・seed 0)
 
-旧: 87.15 (ベースライン: デフォルト設定 512×60、batch 3、lr 1e-3、rank 4)
+旧: 70.12 (batch 3) ← 87.15 (ベースライン: デフォルト設定、batch 3、lr 1e-3、rank 4)
 
 ## 参考: ternary 実験 (autoresearch/jul6, jul10) からの引き継ぎ知見
 
@@ -100,6 +100,18 @@ ternary で実証済みのレシピをまず binary に転移する(B1)。効け
 - binary が ternary に負ける主因は 0 レベル欠落(|ŵ| 小の重みの誤差が ~α に固定)。
   グループ内で α がバランスを取るしかない → **補償容量(LoRA rank)の最適点が
   ternary(r32)より右にシフトしている可能性** → r64 を有望候補に昇格。
+
+### 2026-07-14 B2: batch 1 → ★大成功、新記録 52.21(−17.91)
+
+- 構成: B1 から batch size のみ変更(3→1)。量子化時間: **458.8 分**。NaN/OOM なし。
+- `run_ppl.py`: **PPL 52.21**。旧最小 70.12 から **−17.91(−25.5%)**。
+- **binary では batch 1 の効果が ternary(−1.34)の 13 倍**。binary は ternary より
+  はるかに最適化制約が強い(optimization-limited)ことを示す。
+- 解釈仮説: batch 1 は (a) 3 倍のステップ数、(b) batch-LR スケーリングにより 1/3 の
+  実効 LR、(c) 大きい勾配ノイズ、の複合。binary は全重みの符号が決定境界に関わるため
+  細かい探索の恩恵が大きい(ternary はコード変化が ±Δ 境界近傍のみ)。
+- 含意: batch-1 レジームでは lr / epochs の最適点も移動している可能性 → 再スイープ候補。
+- コード変更なし(CLI のみ)。
 
 ### 次実験キュー(B2 完了後、優先順)
 
