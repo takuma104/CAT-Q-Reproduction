@@ -232,3 +232,24 @@
   rank 24 は明確な容量不足で、rank 32 を維持する。
 - clip、lr、rank、epochs、batch switch の近傍は一通り絞れたため、次は未探索の
   window schedule と CAT-Q / SliderQuant 参照実装との差分を再点検する。
+
+### 2026-07-15 E13: SliderQuant 論文既定 window 2 / stride 1 - 失敗 (28.97)
+
+- CAT-Q 論文は window size を SliderQuant の既定に従うとし、SliderQuant 論文は
+  中間層を明示的に `{s=2, i=1}` としている。一方、公開 W2A16 config は現行実装と
+  同じ `{s=4, i=2}`。この差を解消するため、E9 から window/stride だけを 2/1 に
+  変更した。層 10 からの batch 2 切替を保つため `--batch-size-switch 2 12 2` を使用。
+- 構成: batch 1、pass 2 window 12 から batch 2、clip 0.5、LoRA rank 32、
+  epochs 80、LM lr 2e-3。同じ校正テンソルを再利用。窓数は 19 から 29 に増えたが、
+  延べ layer-window 数は 64 から 62 に減り、量子化時間は **490.1 分**と E9 の
+  507.7 分より約 3.5%短かった。NaN/OOM なし。
+- `uv run python scripts/run_ppl.py --models outputs/jul14-17b-w2s1-b1-p2w12b2-clip05-r32-e80-lr2`:
+  **PPL 28.97**。最小 27.37 より +1.60 のため不採用。コード変更なし。
+- 共通形状の pass 2 深層 4 窓は final loss が 282.67 / 289.00 / 291.65 /
+  288.18 で、E9 の 259.05 / 262.53 / 265.52 / 262.01 より一貫して約 9〜10%
+  高かった。共通浅層 window 1〜3 はほぼ同じだが window 4 も 0.05919 対
+  0.05715 と悪化。小さい中間窓による層間 synergy の低下が後段へ蓄積した。
+- 論文記載の公式 BitTern リポジトリも確認したが、現時点では README のみで
+  CAT-Q コードは公開準備中。実測で優位な W2A16 config の 4/2 を維持する。
+- 次は CAT-Q 論文 Table 12 で Qwen/Llama の双方に一貫して効いた group size 64 を、
+  E9 の現ベスト構成に適用する。
