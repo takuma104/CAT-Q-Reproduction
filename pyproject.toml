@@ -1,5 +1,5 @@
 [project]
-name = "cat-q-private"
+name = "cat-q-reproduction"
 version = "0.1.0"
 description = "Reproduction of CAT-Q: Cost-efficient and Accurate Ternary Quantization for LLMs (arXiv 2606.26650)"
 readme = "README.md"
